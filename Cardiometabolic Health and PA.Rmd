@@ -1,0 +1,1085 @@
+---
+title: "MI, cardiometabolic health, and physical activity exploratory analysis"
+author: "Lev Kolinski"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# 1. Setup
+
+## 1.1 Packages and data loading
+```{r loading, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(brms)
+library(tidybayes)
+library(bayesplot)
+library(ggdist)
+library(patchwork)
+library(gt)
+library(corrplot)
+
+
+# ── Model fit file path ───────────────────────────────────────────────────────
+
+fits_dir <- "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits"
+
+# ── Data loading ──────────────────────────────────────────────────────────────
+long_survey_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/long_survey.csv")
+
+cardiochek_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/Cardiochek/cardiochek_data.csv")
+colnames(cardiochek_data) <- tolower(colnames(cardiochek_data))
+
+ffq_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/ffq.csv")
+colnames(ffq_data) <- tolower(colnames(ffq_data))
+
+ax3_data_fp <- "/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/Axivity/GGIR Outputs/"
+
+actigraphy_data <- rbind(
+  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 9-16/results/part5_daysummary_MM_L30M100V400_T5A5.csv")),
+  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 16-23/results/part5_daysummary_MM_L30M100V400_T5A5.csv")),
+  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 23-30/results/part5_daysummary_MM_L30M100V400_T5A5.csv")),
+  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 30 - September 6/results/part5_daysummary_MM_L30M100V400_T5A5.csv")))
+
+actigraphy_data$participant_id <- strtrim(actigraphy_data$ID, 4)
+
+crp_data <- readxl::read_excel("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/CRP ELISA RESULTS/CRP ELISA Results Master Sheet.xlsx",
+                               sheet = "Assay Results")
+```
+
+## 1.2 Data wrangling
+
+```{r wrangling_data, message=FALSE, warning=FALSE}
+## Food Data (n=424) ----
+food_data <- ffq_data |>
+  dplyr::select(contains(c("participant_id", "food_insecurity", "total"))) |>
+  dplyr::mutate(across(-c(participant_id, food_insecurity), as.numeric)) |> 
+  ## dropping partiicpants who weren't asked about food insecurity (preliminary FFQ)
+  filter(!is.na(food_insecurity)) |> 
+  mutate(participant_id = ifelse(participant_id == "NDF7038", "NSF7038", participant_id),
+         participant_id = ifelse(participant_id == "NSF705", "NSF7025", participant_id))
+
+
+
+## Long Survey Health Data (n=273)----
+long_survey_health_data <- long_survey_data |>
+  dplyr::select(c(participant_id, gender, age, systolic_1, diastolic_1, systolic_2, diastolic_2,
+                  systolic_3, diastolic_3, height, weight, body_fat)) |>
+  mutate(across(contains("systolic"), as.numeric)) |>
+  mutate(across(contains("diastolic"), as.numeric)) |>
+  mutate(across(contains("height"), as.numeric)) |>
+  mutate(across(contains("weight"), as.numeric)) |>
+  mutate(age = as.numeric(age)) |>
+  mutate(body_fat = as.numeric(body_fat)) |> 
+  mutate(average_systolic  = (systolic_1 + systolic_2 + systolic_3) / 3) |>
+  mutate(average_diastolic = (diastolic_1 + diastolic_2 + diastolic_3) / 3) |>
+  mutate(MAP = average_diastolic + (average_systolic - average_diastolic) / 3) |>
+  mutate(BMI = weight / (height)^2) |> 
+  mutate(BMI = ifelse(BMI < 10|BMI > 60, NA, BMI))
+
+## Long Survey SOL Data (confirmed no NAs) (n = 273)----
+long_survey_sol_data <- long_survey_data |>
+  mutate(material_wall_index = 0) |>  # bamboo, rafia, travelers_palm default to 0
+  mutate(material_wall_index = if_else(material_wall == "wood",          1, material_wall_index)) %>%
+  mutate(material_wall_index = if_else(material_wall == "burnt_brick",   2, material_wall_index)) %>%
+  mutate(material_wall_index = if_else(material_wall == "metal_sheets",  3, material_wall_index)) %>%
+  mutate(material_wall_index = if_else(material_wall == "cement",        4, material_wall_index)) %>%
+  mutate(material_roof_index = 0) %>%  # bamboo, thatch default to 0
+  mutate(material_roof_index = if_else(material_roof == "metal_sheets",  1, material_roof_index)) %>%
+  mutate(material_roof_index = if_else(material_roof == "cement",        2, material_roof_index)) %>%
+  mutate(material_floor_index = 0) %>%  # bamboo, dirt, travelers_palm default to 0
+  mutate(material_floor_index = if_else(material_floor == "wood",   1, material_floor_index)) %>%
+  mutate(material_floor_index = if_else(material_floor == "cement", 2, material_floor_index)) %>%
+  mutate(cgsol = rowSums(across(c(durable_goods_owned_mobile_phone,
+                                   durable_goods_owned_radio,
+                                   durable_goods_owned_television,
+                                   durable_goods_owned_computer,
+                                   durable_goods_owned_refrigerator,
+                                   durable_goods_owned_generator,
+                                   durable_goods_owned_bicycle,
+                                   durable_goods_owned_motorcycle,
+                                   durable_goods_owned_car_truck,
+                                   durable_goods_owned_boat),
+                                as.numeric),
+                         na.rm = TRUE)) |>
+  select(participant_id, cgsol, material_floor_index, material_wall_index,
+         material_roof_index, waist_circumference)
+
+## Cardiochek Data (n=393)----
+cardiochek_data <- cardiochek_data |>
+  ## dropping duplicate NSF7022 response....age doesn't match for R_mRIUzcXckCQEhdG
+  filter(responseid!="R_mRIUzcXckCQEhdG") |> 
+  select(-c(survey_date, responseid, age, gender, consent)) |>
+  select(-contains("category"))   |> 
+  ## removing non-fasting samples
+  filter(!grepl("eat", notes))
+
+## CRP Data (n = 133) -----
+crp_data <- crp_data |> 
+  mutate(cv = as.numeric(cv),
+         concentration_pg_ml_raw = as.numeric(concentration_pg_ml_raw),
+         additional_dilution_factor = as.numeric(dilution),
+         eluate_dilution = 167) |> 
+  filter(cv<12,concentration_pg_ml_raw > 18.75,concentration_pg_ml_raw < 1200) |> 
+  filter(!grepl("Control|Standard|Blank|Pool", sample_id),
+         !(grepl("saturated", notes)),
+         assay_number != 2) |> 
+  group_by(sample_id) %>%
+  slice_tail(n = 1) %>%
+  ungroup() |> 
+  rename(participant_id = sample_id) |> 
+  select(participant_id, additional_dilution_factor, concentration_pg_ml_raw) |> 
+  filter(!is.na(concentration_pg_ml_raw)) |> 
+  mutate(concentration_pg_ml_adjusted_for_dilutions = concentration_pg_ml_raw*additional_dilution_factor) |> 
+  mutate(serum_equivalent_mg_L = 1E-6*((355.67*concentration_pg_ml_adjusted_for_dilutions)-59884.10))
+
+## Actigraphy Summary (person-level) (n=103) ----
+actigraphy_summary <- actigraphy_data |>
+  mutate(
+    light_min      = dur_day_total_LIG_min,
+    moderate_min   = dur_day_total_MOD_min,
+    vigorous_min   = dur_day_total_VIG_min,
+    inactivity_min = dur_day_total_IN_min,
+    ENMO           = ACC_day_mg,
+    intensity_gradient = ig_day_gradient
+  ) |>
+  group_by(participant_id) |>
+  summarise(
+    mean_light_min    = mean(light_min,      na.rm = TRUE),
+    mean_moderate_min = mean(moderate_min,   na.rm = TRUE),
+    mean_vigorous_min = mean(vigorous_min,   na.rm = TRUE),
+    mean_inactive_min = mean(inactivity_min, na.rm = TRUE),
+    mean_ENMO         = mean(ENMO,           na.rm = TRUE),
+    mean_IG           = mean(intensity_gradient, na.rm = TRUE),
+    n_valid_days      = n(),
+    .groups = "drop"
+  )
+
+## Merging ----
+### n = 273
+full_dataset_long_survey <- long_survey_health_data |>
+  inner_join(food_data,               by = "participant_id") |>
+  inner_join(long_survey_sol_data,     by = "participant_id") |>
+  left_join(actigraphy_summary,        by = "participant_id") |> 
+  left_join(crp_data,        by = "participant_id") |> 
+  left_join(cardiochek_data,  by = "participant_id") |> 
+  mutate(village = ifelse(participant_id == "A324", "Mandena", village))
+
+
+### n = 393
+full_dataset <- full_dataset_long_survey |>
+  # hsol: sum raw ordinal scores across wall, roof, floor then scale once
+  mutate(hsol = material_wall_index + material_floor_index + material_roof_index) |>
+  rename(crp = serum_equivalent_mg_L)
+
+# ── Wrangling diagnostics ─────────────────────────────────────────────────────
+# Verify hsol raw score distribution and cgsol NA handling
+
+cat("hsol raw score distribution (should be 0–8 range):\n")
+print(summary(full_dataset$hsol))
+
+cat("\ncgsol distribution (should be 0–10, no NAs):\n")
+print(summary(full_dataset$cgsol))
+cat("N missing cgsol:", sum(is.na(full_dataset$cgsol)), "\n")
+
+cat("\nwall index levels:\n")
+print(table(full_dataset$material_wall_index, useNA = "always"))
+cat("\nroof index levels:\n")
+print(table(full_dataset$material_roof_index, useNA = "always"))
+cat("\nfloor index levels:\n")
+print(table(full_dataset$material_floor_index, useNA = "always"))
+
+
+```
+
+
+### PREPARING DATA FOR CENSORED IMPUTATION----
+```{r}
+full_dataset <- full_dataset |>
+  mutate(
+    ldl_cens = case_when(
+      !is.na(ldl_cholesterol) ~ "none",
+      is.na(ldl_cholesterol)  ~ "interval",
+      TRUE ~ NA_character_
+    ),
+   ldl_ub = case_when(
+      ldl_cens == "none" ~ ldl_cholesterol,
+  
+        ## LDL not calculated if total cholesterol <100 and/or bf(triglycerides < 50 and/or HDL <20
+        ## and/or triglycerides >400
+      # TC observed, HDL observed, trig observed (>400 case) -- just plugging in observed values
+      ldl_cens == "interval" & !is.na(total_cholesterol) & !is.na(hdl_cholesterol) & !is.na(triglycerides) ~
+        pmax(total_cholesterol - hdl_cholesterol - (triglycerides / 5), 1),
+
+      # TC observed, HDL observed, trig missing (<50 case) -- use trig's own ub=50
+      ldl_cens == "interval" & !is.na(total_cholesterol) & !is.na(hdl_cholesterol) &  is.na(triglycerides) ~
+        pmax(total_cholesterol - hdl_cholesterol - (50 / 5), 1),
+
+      # TC <100, HDL observed, trig observed -- fall back to TC LLOQ
+      ldl_cens == "interval" &  is.na(total_cholesterol) & !is.na(hdl_cholesterol) & !is.na(triglycerides) ~
+        pmax(100 - hdl_cholesterol - (triglycerides / 5), 1),
+
+      # TC <100, HDL observed, trig <50 -- both substituted to LLOQ
+      ldl_cens == "interval" &  is.na(total_cholesterol) & !is.na(hdl_cholesterol) &  is.na(triglycerides) ~
+        pmax(100 - hdl_cholesterol - (50 / 5), 1),
+
+      # TC < 100, HDL  < 20, triglycerides observed 
+      ldl_cens == "interval" &  is.na(hdl_cholesterol) &  is.na(total_cholesterol) & !is.na(triglycerides) ~
+        pmax(100 - 1 - (triglycerides/5), 1),
+      TRUE ~ NA_real_
+    ),
+    ldl_lb = case_when(
+      ldl_cens == "none"     ~ ldl_cholesterol,
+      ldl_cens == "interval" ~ 1,
+      TRUE ~ NA_real_
+    ),
+
+    ## Triglycerides (LLOQ = 50)
+    tri_cens = case_when(
+      !is.na(triglycerides) ~ "none",
+      is.na(triglycerides)  ~ "interval",
+      TRUE ~ NA_character_
+    ),
+
+    tri_lb = case_when(
+      tri_cens == "none"     ~ triglycerides,
+      tri_cens == "interval" ~ 1,
+      TRUE ~ NA_real_
+    ),
+
+    tri_ub = case_when(
+      tri_cens == "none"     ~ triglycerides,
+      tri_cens == "interval" ~ 50,
+      TRUE ~ NA_real_
+    ),
+    
+    ## Total cholesterol (LLOQ = 100)
+    tot_chol_cens = case_when(
+      !is.na(total_cholesterol) ~ "none",
+      is.na(total_cholesterol)  ~ "interval",
+      TRUE ~ NA_character_
+    ),
+
+    tot_chol_lb = case_when(
+      tot_chol_cens == "none"     ~ total_cholesterol,
+      tot_chol_cens == "interval" ~ 1,
+      TRUE ~ NA_real_
+    ),
+
+    tot_chol_ub = case_when(
+      tot_chol_cens == "none"     ~ total_cholesterol,
+      tot_chol_cens == "interval" ~ 100,
+      TRUE ~ NA_real_
+    ),
+    
+    ## HDL cholesterol (LLOQ = 20)
+    hdl_cens = case_when(
+      !is.na(hdl_cholesterol) ~ "none",
+      is.na(hdl_cholesterol)  ~ "interval",
+      TRUE ~ NA_character_
+    ),
+
+    hdl_lb = case_when(
+      hdl_cens == "none"     ~ hdl_cholesterol,
+      hdl_cens == "interval" ~ 1,
+      TRUE ~ NA_real_
+    ),
+
+    hdl_ub = case_when(
+      hdl_cens == "none"     ~ hdl_cholesterol,
+      hdl_cens == "interval" ~ 20,
+      TRUE ~ NA_real_
+    )
+  )
+  
+```
+
+## 1.3 Market food index
+
+```{r ffq_market_index}
+# ── Market food index ─────────────────────────────────────────────────────────
+# Market/processed items
+market_food_cols <- c(
+  "total_bread", "total_pasta", "total_chips", "total_cookies_sweets",
+  "total_soda", "total_beer", "total_butter_oil",
+  "total_dairy"
+)
+
+ffq_market <- ffq_data |>
+  mutate(across(all_of(market_food_cols), as.numeric)) |>
+  mutate(market_food_index = rowMeans(pick(all_of(market_food_cols)), na.rm = TRUE)) |>
+  select(participant_id, market_food_index)
+
+full_dataset <- full_dataset |>
+  left_join(ffq_market, by = "participant_id")
+```
+
+
+## 1.5 Analytic dataset
+
+```{r model_data}
+
+model_data <- full_dataset |>
+  filter(!is.na(mean_ENMO)) |> # only want actigraphy participants pre-scaling
+  mutate(
+    cgsol_z = as.numeric(scale(cgsol)),   # substantive MI predictor: consumer goods
+    hsol_z  = as.numeric(scale(hsol))) |>      # control variable: housing quality
+  mutate(
+    log_BMI           = log(BMI),
+    log_body_fat      = log(body_fat),
+    market_food_index_raw = market_food_index,
+    market_food_index = log(market_food_index + 1),
+    log_MAP           = log(MAP),
+    log_glucose       = log(glucose),
+    log_hdl           = log(hdl_cholesterol),
+    log_total_cholesterol = log(total_cholesterol),
+    log_triglycerides = log(triglycerides),
+    log_ldl           = log(ldl_cholesterol),
+    log_crp           = log(crp),
+    age_raw           = age,
+
+    ## interval censored triglycerides, HDL, total cholesterol, and LDL
+    ## NOTE: these are scaled manually below using a SHARED mean/sd per analyte,
+    ## NOT via the generic across()/scale() block -- scaling lb/ub independently
+    ## would not preserve lb < ub ordering, since each column would get a
+    ## different mean/sd applied to it.
+    log_ldl_lb = log(ldl_lb),
+    log_ldl_ub = log(ldl_ub),
+
+    log_tri_lb = log(tri_lb),
+    log_tri_ub = log(tri_ub),
+
+    log_tot_chol_lb = log(tot_chol_lb),
+    log_tot_chol_ub = log(tot_chol_ub),
+
+    log_hdl_lb = log(hdl_lb),
+    log_hdl_ub = log(hdl_ub)
+  ) |>
+  mutate(across(c(market_food_index,
+                  log_BMI,
+                  log_body_fat,
+                  log_MAP,
+                  log_glucose,
+                  log_crp,
+                  log_hdl,
+                  log_total_cholesterol,
+                  log_ldl,
+                  log_triglycerides,
+                  age),
+                ~ as.numeric(scale(.x)))) |>
+  mutate(
+    gender          = case_when(
+      gender == "Male"   ~ 1L,
+      gender == "Female" ~ 0L,
+      TRUE               ~ NA_integer_
+    ),
+    food_insecurity = as.integer(food_insecurity),
+    village         = as.character(village)
+  )
+
+
+scale_censored_pair <- function(data, lb_col, ub_col, cens_col, raw_observed_col) {
+  log_mean <- data |>
+    filter(.data[[cens_col]] == "none") |>
+    mutate(tmp = log(.data[[raw_observed_col]])) |>
+    pull(tmp) |>
+    mean(na.rm = TRUE)
+
+  log_sd <- data |>
+    filter(.data[[cens_col]] == "none") |>
+    mutate(tmp = log(.data[[raw_observed_col]])) |>
+    pull(tmp) |>
+    sd(na.rm = TRUE)
+
+  new_lb_name <- paste0("log_", lb_col)
+  new_ub_name <- paste0("log_", ub_col)
+
+  data |>
+    mutate(
+      "{new_lb_name}" := (log(.data[[lb_col]]) - log_mean) / log_sd,
+      "{new_ub_name}" := (log(.data[[ub_col]]) - log_mean) / log_sd
+    )
+}
+
+model_data <- model_data |>
+  scale_censored_pair("ldl_lb", "ldl_ub", "ldl_cens", "ldl_cholesterol") |>
+  scale_censored_pair("tri_lb", "tri_ub", "tri_cens", "triglycerides") |>
+  scale_censored_pair("hdl_lb", "hdl_ub", "hdl_cens", "hdl_cholesterol") |>
+  scale_censored_pair("tot_chol_lb", "tot_chol_ub", "tot_chol_cens", "total_cholesterol")
+
+## Ensuring none of the duplicate participants ended up in the model df
+exclusive_id_pairs <- list(
+  c("A123", "A414"),
+  c("A175", "A387"),
+  c("A181", "A360"),
+  c("A188", "A382"),
+  c("A222", "A307")
+)
+
+for (pair in exclusive_id_pairs) {
+  in_data <- pair %in% model_data$participant_id
+  if (all(in_data)) {
+    cat("VIOLATION:", pair[1], "and", pair[2], "both present\n")
+  } else if (!any(in_data)) {
+    cat("neither present:", pair[1], "/", pair[2], "\n")
+  } else {
+    cat("OK - exactly one present:", pair[which(in_data)], "\n")
+  }
+}
+
+# Missingness summary
+model_data |>
+  summarise(
+    n_total_chol_missing    = sum(is.na(total_cholesterol)),
+    n_ldl_missing           = sum(is.na(ldl_cholesterol)),
+    n_hdl_missing           = sum(is.na(hdl_cholesterol)),
+    n_triglycerides_missing = sum(is.na(triglycerides)),
+    n_glucose_missing = sum(is.na(glucose)),
+    n_map_missing = sum(is.na(MAP)),
+    n_ffq_missing = sum(is.na(market_food_index)),
+    n_bmi_missing = sum(is.na(BMI)),
+    n_age_missing = sum(is.na(age)),
+    n_gender_missing = sum(is.na(gender)),
+    n_hsol_missing = sum(is.na(hsol_z)),
+    n_cgsol_missing = sum(is.na(cgsol_z)))
+
+
+print("FINAL ANALYTICAL SAMPLE SIZE:")
+nrow(model_data)
+
+model_data |> 
+  count(hdl_cens)
+model_data |> 
+  count(ldl_cens)
+model_data |> 
+  count(tri_cens)
+```
+
+
+
+# 2. Descriptive Plots
+
+#### DEMOGRAPHICS TABLE
+```{r demo_table}
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: mean (SD) string
+# ─────────────────────────────────────────────────────────────────────────────
+mean_sd <- function(x) {
+  sprintf("%.1f (%.1f)", mean(x, na.rm = TRUE), sd(x, na.rm = TRUE))
+}
+
+# Continuous variables
+continuous_summary <- model_data %>%
+  group_by(village) %>%
+  summarise(
+    `Age (years)`       = mean_sd(age_raw),
+    `House Construction` = mean_sd(hsol),
+    `Commercial Goods` = mean_sd(cgsol),
+    `Market Food Index` = mean_sd(market_food_index_raw)) |>
+  pivot_longer(-village, names_to = "Variable", values_to = "Value")
+
+sex_summary <- model_data %>%
+  group_by(village) %>%
+  summarise(
+    `Female (%)`   = sprintf("%d%% (n=%d)", round((1 - mean(gender, na.rm = TRUE)) * 100), sum(gender == 0, na.rm = TRUE)),
+    `Male (%)`   = sprintf("%d%% (n=%d)", round((mean(gender, na.rm = TRUE)) * 100), sum(gender, na.rm = TRUE))
+  ) %>%
+  pivot_longer(-village, names_to = "Variable", values_to = "Value")
+
+n_row <- model_data %>%
+  group_by(village) %>%
+  summarise(Value = as.character(n()), Variable = "N") %>%
+  select(Variable, everything())
+
+table_all <- bind_rows(continuous_summary,sex_summary, n_row) %>%
+  pivot_wider(names_from = village, values_from = Value) %>%
+  relocate(Variable)
+
+final_table <- table_all %>%
+  gt() %>%
+  tab_header(title = "Descriptive statistics by village") %>%
+  tab_spanner(label = "Village") %>%
+  sub_missing(columns = everything(), missing_text = "")
+
+final_table |>
+  tab_style(style = cell_text(weight = "bold"),
+            locations = cells_body(rows = Variable == "N"))
+
+paste("n female:")
+n_female <- model_data |> 
+  filter(gender == 0) |> 
+  nrow()
+n_female
+paste("% female:")
+n_female*100/nrow(model_data)
+
+paste("n male:")
+n_male <- model_data |> 
+  filter(gender == 1) |> 
+  nrow()
+n_male
+paste("% male:")
+
+n_male*100/nrow(model_data)
+
+
+paste("Age range:")
+min(model_data$age_raw)
+max(model_data$age_raw)
+
+paste("Mean/SD age:")
+mean(model_data$age_raw)
+sd(model_data$age_raw)
+
+paste("Mean/SD commercial goods:")
+mean(model_data$cgsol)
+sd(model_data$cgsol)
+
+paste("Mean/SD household score:")
+mean(model_data$hsol)
+sd(model_data$hsol)
+
+
+paste("Correlation test of household scores and commercial goods:")
+
+wealth_matrix <- model_data |> 
+  select(cgsol_z, hsol_z) |> 
+  as.matrix()
+
+M = cor(wealth_matrix,
+                 method = "pearson")
+M
+testRes = cor.mtest(wealth_matrix,
+                    method = "pearson", 
+                    conf.level = 0.95)
+testRes
+
+paste("Mean/SD market food frequency:")
+mean(model_data$market_food_index_raw)
+sd(model_data$market_food_index_raw)
+
+model_data |> 
+  count(ldl_cens)
+```
+
+# 4. Exploratory Analyses of Physical Activity
+
+## 4.1 Preparing data
+
+```{r actigraphy_subsample, cache = TRUE}
+model_data_acti <- model_data |>
+  ## cutting out likely infected CRP samples
+  mutate(log_crp = ifelse(crp>10, NA, log_crp)) |> 
+  mutate(log_waist_circumference = scale(log(waist_circumference))) |> 
+  mutate(mean_light_min_z = scale(mean_light_min),
+         mean_moderate_min_z = scale(mean_moderate_min),
+         mean_vigorous_min_sqrt_z = scale(sqrt(mean_vigorous_min)),
+         mean_inactive_min_z = scale(mean_inactive_min),
+         mean_ENMO_z = scale(mean_ENMO),
+         mean_IG_z = scale(mean_IG)) |> 
+  mutate(
+    high_total_cholesterol = ifelse(tot_chol_lb >= 200, 1L, 0L),
+    high_ldl_cholesterol   = ifelse(ldl_lb >= 100, 1L, 0L),
+    high_triglycerides     = ifelse(tri_lb >= 150, 1L, 0L),
+    high_glucose           = ifelse(glucose >= 100, 1L, 0L),
+    low_hdl_cholesterol    = case_when(
+      gender == 1 & hdl_lb < 40 ~ 1L,
+      gender == 0 & hdl_lb < 50 ~ 1L,
+      TRUE ~ 0L
+    ),
+    high_waist_circumference    = case_when(
+      gender == 1 & waist_circumference >= 102 ~ 1L,
+      gender == 0 & waist_circumference >= 88 ~ 1L,
+      TRUE ~ 0L
+    )
+  ) |>
+  mutate(
+    high_cardiochek_binary = case_when(
+      high_total_cholesterol == 1 | high_ldl_cholesterol == 1 |
+        high_triglycerides == 1 | high_glucose == 1 ~ 1L,
+      TRUE ~ 0L
+    ),
+    high_bp_for_mets = ifelse(average_systolic >= 130 | average_diastolic >= 85, 1L, 0L)
+  ) |>
+  mutate(
+    metabolic_syndrome_score = rowSums(
+      cbind(high_glucose, high_bp_for_mets, high_triglycerides, low_hdl_cholesterol, high_waist_circumference)
+    ),
+    metabolic_syndrome_binary = ifelse(metabolic_syndrome_score>=3, 1, 0)
+  )
+
+model_data_acti |>
+  summarise(
+    n_total_chol_missing    = sum(is.na(total_cholesterol)),
+    n_triglycerides_missing = sum(is.na(triglycerides)),
+    n_crp_missing = sum(is.na(log_crp)),
+    n_ldl_missing           = sum(is.na(ldl_cholesterol)),
+    n_tested                = sum(!is.na(fasted)),
+    # overlap: missing both total_chol and triglycerides
+    n_both_chol_tri_missing          = sum(is.na(total_cholesterol) & is.na(triglycerides), na.rm = TRUE)
+  )
+```
+
+
+
+## Correlation between ENMO and market food index
+```{r PA-food}
+
+food_enmo_matrix <- model_data_acti |> 
+  select(market_food_index, mean_ENMO) |> 
+  as.matrix()
+
+M = cor(food_enmo_matrix,
+                 method = "pearson")
+M
+testRes = cor.mtest(food_enmo_matrix,
+                    method = "pearson", 
+                    conf.level = 0.95)
+testRes
+
+```
+
+## Actigraphy correlations
+```{r}
+actigraphy_mat <- actigraphy_summary |> 
+  select(-participant_id, -n_valid_days) |> 
+  as.matrix()
+
+pa_var_labels_corrplot <- c(
+  mean_light_min    = "Light activity",
+  mean_moderate_min = "Moderate activity",
+  mean_vigorous_min = "Vigorous activity",
+  mean_inactive_min = "Inactivity",
+  mean_ENMO         = "ENMO",
+  mean_IG           = "Intensity Gradient"
+)
+
+M = cor(actigraphy_mat,
+        method = "pearson")
+
+colnames(M) <- pa_var_labels_corrplot[colnames(M)]
+rownames(M) <- pa_var_labels_corrplot[rownames(M)]
+
+# png("/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/pa_corrplot.png",
+#     width = 7, height = 7, units = "in", res = 300)
+
+corrplot(M,
+         method = "circle",
+         type = "lower",
+         order = "hclust",
+         insig = "blank",
+         tl.col = "black",
+         tl.srt = 45,
+         tl.cex = 0.9,
+         number.cex = 0.6,
+         col = COL2('RdBu', 10),
+         diag = FALSE)
+
+
+mean(actigraphy_summary$mean_vigorous_min)
+mean(actigraphy_summary$mean_moderate_min)
+
+actigraphy_summary |> 
+  mutate(mean_MVPA = mean_vigorous_min + mean_moderate_min) |> 
+  summarise(mean(mean_MVPA))
+
+actigraphy_summary |> 
+  mutate(mean_MVPA = mean_vigorous_min + mean_moderate_min) |> 
+  summarise(sd(mean_MVPA))
+
+sd(actigraphy_summary$mean_vigorous_min)
+```
+
+## 4.2 Predictors of PA
+```{r acti_priors}
+priors_path <- c(
+  prior(normal(0, 1),   class = b),
+  prior(normal(0, 1.5), class = b, coef = "villageMandena"),
+  prior(normal(0, 2),   class = Intercept)
+)
+
+fit_pa_outcome_model <- function(outcome, data = model_data_acti, seed = 24) {
+  form <- bf(as.formula(paste0(outcome, " | weights(n_valid_days) ~ cgsol_z + hsol_z + age + gender + village")))
+  brm(
+    formula = form,
+    data    = data,
+    family  = gaussian(),
+    prior   = priors_path,
+    chains  = 4, iter = 4000, warmup = 1000, cores = 4, seed = seed
+  )
+}
+
+pa_outcomes <- c(
+  "mean_light_min_z",
+  "mean_moderate_min_z",
+  "mean_vigorous_min_sqrt_z",
+  "mean_inactive_min_z",
+  "mean_ENMO_z",
+  "mean_IG_z"
+)
+
+# fits_pa_outcomes <- purrr::map(pa_outcomes, fit_pa_outcome_model) |>
+#   purrr::set_names(pa_outcomes)
+# saveRDS(fits_pa_outcomes, file = paste0(fits_dir, "predictors_PA_2026.08.17.rds"))
+
+fits_pa_outcomes<- readRDS(paste0(fits_dir, "/predictors_PA_2026.08.17.rds"))
+
+extract_predictor_effects <- function(fits, predictors = c("gender", "age", "cgsol_z", "hsol_z", "villageMandena")) {
+  purrr::imap_dfr(fits, function(fit, outcome_key) {
+    fe <- as.data.frame(fixef(fit, probs = c(0.055, 0.945)))
+    fe$predictor <- rownames(fe)
+    fe |>
+      dplyr::filter(predictor %in% predictors) |>
+      dplyr::transmute(
+        outcome   = outcome_key,
+        predictor = predictor,
+        estimate  = Estimate,
+        lower     = Q5.5,
+        upper     = Q94.5
+      )
+  })
+}
+
+
+fits_pa_outcomes<-fits_pa_outcomes[c("mean_inactive_min_z", "mean_ENMO_z", "mean_IG_z")]
+
+predictor_effects <- extract_predictor_effects(fits_pa_outcomes)
+
+
+outcome_pa_labels <- c(
+  mean_inactive_min_z      = "Inactivity",
+  mean_ENMO_z              = "ENMO",
+  mean_IG_z                = "Intensity Gradient"
+)
+
+pa_colors <- c(
+  "Inactivity"         = "#313695",  
+  "ENMO"                = "#4d4d4d",  
+  "Intensity Gradient"  = "#984ea3"  
+)
+
+predictor_labels <- c(
+  gender  = "Sex [Male]",
+  age     = "Age",
+  cgsol_z = "Commercial goods",
+  hsol_z  = "Household materials",
+  villageMandena = "Village [Mandena]"
+)
+
+predictor_effects <- predictor_effects |>
+  dplyr::mutate(
+    outcome_label = factor(outcome_pa_labels[outcome],
+                            levels = rev(outcome_pa_labels)),  # try this if dodge order comes out flipped
+    predictor_label = factor(predictor_labels[predictor], levels = rev(predictor_labels))
+  )
+
+
+
+ggplot(predictor_effects, aes(y = predictor_label, x = estimate, color = outcome_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+                  position = position_dodge(width = 0.6)) +
+  geom_point(position = position_dodge(width = 0.6), size = 2.5) +
+  scale_color_manual(values = pa_colors) +
+  guides(color = guide_legend(reverse = TRUE)) +
+  labs(x = "Posterior estimate (89% CI)", y = NULL, color = "PA outcome") +
+  theme_minimal(base_size = 16) +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16, color = "black" ))
+
+ggsave("predictors_of_pa.png", path = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
+       units="in", width=10, height=7, dpi=350, device = "jpeg", bg = "white")
+
+
+
+```
+
+## Predictors of all 6 PA outcomes (for supplementary)
+```{r}
+
+fits_pa_outcomes<- readRDS(paste0(fits_dir, "/predictors_PA_2026.08.17.rds"))
+
+predictor_effects <- extract_predictor_effects(fits_pa_outcomes)
+
+
+outcome_pa_labels <- c(
+  mean_inactive_min_z      = "Inactivity",
+  mean_light_min_z         = "Light activity",
+  mean_moderate_min_z      = "Moderate activity",
+  mean_vigorous_min_sqrt_z = "Vigorous activity",
+  mean_ENMO_z              = "ENMO",
+  mean_IG_z                = "Intensity Gradient"
+)
+
+
+pa_colors <- c(
+  "Inactivity"         = "#313695",  # dark blue
+  "Light activity"      = "#74add1",  # light blue  — adjacent to Inactivity, similar hue family
+  "Moderate activity"    = "#fdae61",  # orange
+  "Vigorous activity"    = "#d73027",  # red         — adjacent to Moderate, similar hue family
+  "ENMO"                = "#4d4d4d",  # neutral grey — composite metric, set apart
+  "Intensity Gradient"  = "#984ea3"   # purple       — composite metric, set apart
+)
+
+predictor_labels <- c(
+  gender  = "Sex [Male]",
+  age     = "Age",
+  cgsol_z = "Commercial goods",
+  hsol_z  = "Household materials",
+  villageMandena = "Village [Mandena]"
+)
+
+predictor_effects <- predictor_effects |>
+  dplyr::mutate(
+    outcome_label = factor(outcome_pa_labels[outcome],
+                            levels = rev(outcome_pa_labels)),  # try this if dodge order comes out flipped
+    predictor_label = factor(predictor_labels[predictor], levels = rev(predictor_labels))
+  )
+
+
+
+ggplot(predictor_effects, aes(y = predictor_label, x = estimate, color = outcome_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+                  position = position_dodge(width = 0.6)) +
+  geom_point(position = position_dodge(width = 0.6), size = 2.5) +
+  scale_color_manual(values = pa_colors) +
+  guides(color = guide_legend(reverse = TRUE)) +
+  labs(x = "Posterior estimate (89% CI)", y = NULL, color = "PA outcome") +
+  theme_minimal(base_size = 16) +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16, color = "black" ))
+
+ggsave("predictors_of_pa_all_outcomes.png", path = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
+       units="in", width=10, height=7, dpi=350, device = "jpeg", bg = "white")
+
+```
+
+
+## Looking at how PA predicts health
+Not controlling for cgsol (activate market participation) because we want total effects of PA on health
+```{r}
+
+##  A324 does not have cardiochek data
+model_data_acti<-model_data_acti |> 
+  mutate(log_ldl_lb = ifelse(participant_id == "A324", NA, log_ldl_lb),
+         ldl_cens = ifelse(participant_id == "A324", NA, ldl_cens),
+         log_tri_lb = ifelse(participant_id == "A324", NA, log_tri_lb),
+         log_tri_ub = ifelse(participant_id == "A324", NA, log_tri_ub),
+         tri_cens = ifelse(participant_id == "A324", NA, tri_cens),
+         log_hdl_lb = ifelse(participant_id == "A324", NA, log_hdl_lb),
+         log_hdl_ub = ifelse(participant_id == "A324", NA, log_hdl_ub),
+         hdl_cens = ifelse(participant_id == "A324", NA, hdl_cens))
+
+
+pa_exposures <- c(
+  "mean_light_min_z",
+  "mean_moderate_min_z",
+  "mean_vigorous_min_sqrt_z",
+  "mean_inactive_min_z",
+  "mean_ENMO_z",
+  "mean_IG_z"
+)
+
+outcome_specs <- tibble::tribble(
+  ~model_name,      ~lhs,                                              ~family,
+  "MAP",            "log_MAP",                                        gaussian(),
+  "CRP",            "log_crp",                                        gaussian(),
+  "body_fat",       "log_body_fat",                                   gaussian(),
+  "waist_circ",     "log_waist_circumference",                        gaussian(),
+  "bmi",            "log_BMI",                                        gaussian(),
+  "glucose",        "log_glucose",                                    gaussian(),
+  "triglycerides",  "log_tri_lb | cens(tri_cens, y2 = log_tri_ub)",    gaussian(),
+  "ldl",            "log_ldl_lb | cens(ldl_cens, y2 = log_ldl_ub)",    gaussian(),
+  "hdl",            "log_hdl_lb | cens(hdl_cens, y2 = log_hdl_ub)",    gaussian(),
+  "met_s",          "metabolic_syndrome_binary",                      bernoulli(link = "logit")
+)
+
+
+fit_health_outcome_model <- function(lhs, exposure, family = gaussian(), data = model_data_acti, seed = 24) {
+  form <- bf(as.formula(paste0(lhs, " ~ ", exposure, " + hsol_z + age + gender + village")))
+  brm(
+    formula = form,
+    data    = data,
+    family  = family,
+    prior   = c(prior(normal(0, 1),   class = b),
+                prior(normal(0, 1.5), class = b, coef = "villageMandena"),
+                prior(normal(0, 2),   class = Intercept)),
+    chains  = 4, iter = 4000, warmup = 1000, cores = 4, seed = seed
+  )
+}
+
+fit_health_outcome_models <- function(exposure, specs = outcome_specs, seed = 24) {
+  specs |>
+    purrr::pmap(\(model_name, lhs, family) fit_health_outcome_model(lhs, exposure, family, seed = seed)) |>
+    purrr::set_names(specs$model_name)
+}
+# 
+# fits_pa_health <- purrr::map(pa_exposures, fit_health_outcome_models) |>
+#   purrr::set_names(pa_exposures)
+# 
+
+# saveRDS(fits_pa_health, file = paste0(fits_dir, "/fits_PA_healthoutcomes_2026.08.17.rds"))
+
+fits_pa_health<- readRDS(paste0("/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/fits_PA_healthoutcomes_2026.08.17.rds"))
+
+fits_pa_health <- fits_pa_health[c("mean_IG_z", "mean_ENMO_z", "mean_inactive_min_z")]
+
+print_fixefs <- function(fits) {
+  purrr::iwalk(fits, ~{
+    cat("\n---", .y, "---\n")
+    print(fixef(.x, probs = c(0.055, 0.945)))
+  })
+}
+
+
+
+## PLOT
+outcome_labels <- c(
+  MAP           = "Mean arterial pressure",
+  CRP           = "CRP",
+  body_fat      = "Body fat",
+  waist_circ    = "Waist circumference",
+  bmi           = "BMI",
+  glucose       = "Glucose",
+  triglycerides = "Triglycerides",
+  ldl           = "LDL",
+  hdl           = "HDL",
+  met_s         = "Metabolic syndrome (logit)"
+)
+
+extract_pa_effect <- function(fits, exposure_var, exposure_label) {
+  purrr::imap_dfr(fits, function(fit, outcome_key) {
+    fe  <- fixef(fit, probs = c(0.055, 0.945))
+    row <- fe[exposure_var, ]
+    tibble::tibble(
+      outcome  = outcome_key,
+      exposure = exposure_label,
+      estimate = row[["Estimate"]],
+      lower    = row[[3]],
+      upper    = row[[4]]
+    )
+  })
+}
+
+pa_effects <- dplyr::bind_rows(
+  extract_pa_effect(fits_pa_health$mean_inactive_min_z,      "mean_inactive_min_z",      "Inactivity"),
+   extract_pa_effect(fits_pa_health$mean_ENMO_z,              "mean_ENMO_z",              "ENMO"),
+  extract_pa_effect(fits_pa_health$mean_IG_z,                "mean_IG_z",                "Intensity Gradient")
+) |>
+  dplyr::mutate(
+    outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels))
+  )
+
+pa_exposure_labels <- c("Inactivity", "ENMO", "Intensity Gradient")
+
+pa_effects$exposure <- factor(pa_effects$exposure, levels = pa_exposure_labels)
+
+pa_colors <- c(
+  "Inactivity" = "#313695",
+  # "Light"      = "#74add1",
+  # "Moderate"   = "#fdae61",
+  # "Vigorous"   = "#d73027",
+  "Intensity Gradient"         = "#984ea3",
+  "ENMO"       = "#4d4d4d"
+)
+
+pa_health_plot <- ggplot(pa_effects, aes(y = outcome_label, x = estimate, color = exposure)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+                  position = position_dodge(width = 0.7)) +
+  geom_point(position = position_dodge(width = 0.7), size = 2.5) +
+  scale_color_manual(values = pa_colors) +
+  labs(x = "Effect of PA", y = NULL, color = NULL) +
+  guides(color = guide_legend(reverse = TRUE)) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+
+```
+
+## How MI predicts health (no PA)
+```{r}
+
+priors_path_cgsol_health <- c(
+  prior(normal(0, 1),   class = b),
+  prior(normal(0, 1.5), class = b, coef = "villageMandena"),
+  prior(normal(0, 2),   class = Intercept)
+)
+
+fit_path_model_no_pa <- function(lhs, family = gaussian(), data = model_data_acti, seed = 24) {
+  form <- bf(as.formula(paste0(lhs, " ~ cgsol_z + hsol_z + age + gender + village")))
+  brm(
+    formula = form,
+    data    = data,
+    family  = family,
+    prior   = priors_path_cgsol_health,
+    chains  = 4, iter = 4000, warmup = 1000, cores = 4, seed = seed
+  )
+}
+
+fit_path_models_no_pa <- function(specs = outcome_specs, seed = 24) {
+  specs |>
+    purrr::pmap(\(model_name, lhs, family) fit_path_model_no_pa(lhs, family, seed = seed)) |>
+    purrr::set_names(specs$model_name)
+}
+
+fits_cgsol_no_PA     <- fit_path_models_no_pa()
+
+# saveRDS(fits_cgsol_no_PA, file = paste0(fits_dir, "fits_cgsol_health_no_mvpa_2026.08.25.rds"))
+
+fits_cgsol_no_PA<- readRDS("/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/fits_cgsol_health_no_mvpa_2026.08.25.rds")
+
+
+## PLOT
+outcome_labels <- c(
+  MAP           = "Mean arterial pressure",
+  CRP           = "CRP",
+  body_fat      = "Body fat",
+  waist_circ    = "Waist circumference",
+  bmi           = "BMI",
+  glucose       = "Glucose",
+  triglycerides = "Triglycerides",
+  ldl           = "LDL",
+  hdl           = "HDL",
+  met_s         = "Metabolic syndrome (logit)"
+)
+
+extract_cgsol_effect <- function(fits) {
+  purrr::imap_dfr(fits, function(fit, outcome_key) {
+    fe  <- fixef(fit, probs = c(0.055, 0.945))
+    row <- fe["cgsol_z", ]
+    tibble::tibble(
+      outcome  = outcome_key,
+      exposure = "Commercial Goods",
+      estimate = row[["Estimate"]],
+      lower    = row[[3]],
+      upper    = row[[4]]
+    )
+  })
+}
+cgsol_effects <- extract_cgsol_effect(fits_cgsol_no_PA) |>
+  dplyr::mutate(outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)))
+
+
+cgsol_health_plot <- ggplot(cgsol_effects, aes(y = outcome_label, x = estimate)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0, color = "black") +
+  geom_point(size = 2.5, color = "black") +
+  labs(x = "Effect of commercial goods", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
+
+cgsol_health_plot + pa_health_plot + plot_annotation(
+  tag_levels = "A"
+)
+
+ggsave("pa_cgsol_health_coef_plots.jpeg", path = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
+       units="in", width=10, height=7, dpi=350, device = "jpeg", bg = "white")
+
+
+```
+
+
+
