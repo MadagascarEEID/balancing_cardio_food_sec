@@ -1081,5 +1081,168 @@ ggsave("pa_cgsol_health_coef_plots.jpeg", path = "/Users/levkolinski/Library/Clo
 
 ```
 
+## Modeling MI and PA together looking at health outcocomes
+```{r}
+fit_health_outcome_model_pa_cgsol <- function(lhs, exposure, family = gaussian(), data = model_data_acti, seed = 24) {
+  form <- bf(as.formula(paste0(lhs, " ~ ", exposure, " + cgsol_z + hsol_z + age + gender + village")))
+  brm(
+    formula = form,
+    data    = data,
+    family  = family,
+    prior   = c(prior(normal(0, 1),   class = b),
+                prior(normal(0, 1.5), class = b, coef = "villageMandena"),
+                prior(normal(0, 2),   class = Intercept)),
+    chains  = 4, iter = 4000, warmup = 1000, cores = 4, seed = seed
+  )
+}
+
+fit_health_outcome_models_pa_cgsol <- function(exposure, specs = outcome_specs, seed = 24) {
+  specs |>
+    purrr::pmap(\(model_name, lhs, family) fit_health_outcome_model_pa_cgsol(lhs, exposure, family, seed = seed)) |>
+    purrr::set_names(specs$model_name)
+}
+
+fits_pa_cgsol_health <- purrr::map(pa_exposures, fit_health_outcome_models_pa_cgsol) |>
+   purrr::set_names(pa_exposures)
+
+
+saveRDS(fits_pa_cgsol_health, file= "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/fits_cgsol_pa_health_2026.09.11.rds")
+
+extract_joint_effects <- function(fits_list, exposure_var, exposure_label) {
+  purrr::imap_dfr(fits_list, function(fit, outcome_key) {
+    fe <- fixef(fit, probs = c(0.055, 0.945))
+    dplyr::bind_rows(
+      tibble::tibble(
+        outcome   = outcome_key,
+        predictor = "PA",
+        exposure  = exposure_label,
+        estimate  = fe[exposure_var, "Estimate"],
+        lower     = fe[exposure_var, 3],
+        upper     = fe[exposure_var, 4]
+      )
+    )
+  })
+}
+
+# Combine CGSOL and PA into one tidy frame with a shared color key
+joint_effects <- dplyr::bind_rows(
+  extract_joint_effects(fits_pa_cgsol_health$mean_light_min_z,        "mean_light_min_z",        "Light"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_moderate_min_z,     "mean_moderate_min_z",     "Moderate"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_vigorous_min_sqrt_z,"mean_vigorous_min_sqrt_z","Vigorous"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_inactive_min_z,     "mean_inactive_min_z",     "Inactivity"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_ENMO_z,             "mean_ENMO_z",             "ENMO"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_IG_z,               "mean_IG_z",               "Intensity Gradient")
+) |>
+  dplyr::mutate(
+    outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)),
+    exposure      = factor(exposure, levels = c("Light", "Moderate", "Vigorous",
+                                                "Inactivity", "ENMO", "Intensity Gradient"))
+  )
+
+series_colors <- c(
+  "Light"              = "#74add1",
+  "Moderate"           = "#fdae61",
+  "Vigorous"           = "#d73027",
+  "Inactivity"         = "#313695",
+  "ENMO"               = "#4d4d4d",
+  "Intensity Gradient" = "#984ea3"
+)
+
+joint_effects_combined <- dplyr::bind_rows(
+  # All 6 PA effects
+  joint_effects |>
+    dplyr::filter(predictor == "PA") |>
+    dplyr::mutate(series = as.character(exposure))
+) |>
+  dplyr::mutate(
+    series = factor(series, levels = names(series_colors))
+  )
+
+ggplot(joint_effects_combined,
+       aes(y = outcome_label, x = estimate, color = series)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  # geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+  #                position = position_dodge(width = 0.8)) +
+  geom_point(position = position_dodge(width = 0.8), size = 2.5) +
+  scale_color_manual(values = series_colors) +
+  labs(
+    x     = "Posterior estimate (89% CI)",
+    y     = NULL,
+    color = NULL,
+    title    = "Effects of physical activity, adjusted for commercial goods",
+    subtitle = "89% credibility intervals"
+  ) +
+  guides(color = guide_legend(reverse = TRUE)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position  = "top",
+    plot.title       = element_text(face = "bold", size = 12),
+    plot.subtitle    = element_text(color = "grey40", size = 10)
+  )
+
+ggsave("pa_cgsol_joint_health_coef_plots_no_CI.jpeg",
+       path  = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
+       units = "in", width = 11, height = 7, dpi = 350, device = "jpeg", bg = "white")
+
+
+### RESTRICTED TO 3 MAIN PA VARIABLES
+joint_effects_restricted <- dplyr::bind_rows(
+  extract_joint_effects(fits_pa_cgsol_health$mean_inactive_min_z,     "mean_inactive_min_z",     "Inactivity"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_ENMO_z,             "mean_ENMO_z",             "ENMO"),
+  extract_joint_effects(fits_pa_cgsol_health$mean_IG_z,               "mean_IG_z",               "Intensity Gradient")
+) |>
+  dplyr::mutate(
+    outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)),
+    exposure      = factor(exposure, levels = c("Inactivity", "ENMO", "Intensity Gradient"))
+  )
+
+series_colors_restricted <- c(
+  "Inactivity"         = "#313695",
+  "ENMO"               = "#4d4d4d",
+  "Intensity Gradient" = "#984ea3"
+)
+
+joint_effects_combined_restricted <- dplyr::bind_rows(
+  # All 6 PA effects
+  joint_effects_restricted |>
+    dplyr::filter(predictor == "PA") |>
+    dplyr::mutate(series = as.character(exposure))
+) |>
+  dplyr::mutate(
+    series = factor(series, levels = names(series_colors_restricted))
+  )
+
+ggplot(joint_effects_combined_restricted,
+       aes(y = outcome_label, x = estimate, color = series)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
+                 position = position_dodge(width = 0.8)) +
+  geom_point(position = position_dodge(width = 0.8), size = 2.5) +
+  scale_color_manual(values = series_colors) +
+  labs(
+    x     = "Posterior estimate (89% CI)",
+    y     = NULL,
+    color = NULL,
+    title    = "Effects of physical activity, adjusted for commercial goods",
+    subtitle = "89% credibility intervals"
+  ) +
+  guides(color = guide_legend(reverse = TRUE)) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position  = "top",
+    plot.title       = element_text(face = "bold", size = 12),
+    plot.subtitle    = element_text(color = "grey40", size = 10)
+  )
+
+ggsave("pa_cgsol_joint_health_coef_plots_main.jpeg",
+       path  = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
+       units = "in", width = 11, height = 7, dpi = 350, device = "jpeg", bg = "white")
+
+```
+
+
+
 
 
