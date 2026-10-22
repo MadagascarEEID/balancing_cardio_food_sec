@@ -240,7 +240,7 @@ market_food_cols <- c(
 ffq_market <- ffq_data |>
   mutate(across(all_of(market_food_cols), as.numeric)) |>
   mutate(market_food_index = rowMeans(pick(all_of(market_food_cols)), na.rm = TRUE)) |>
-  select(participant_id, market_food_index)
+  select(participant_id, market_food_index, food_insecurity)
 
 # Final sample size of N = 381
 full_dataset <- full_dataset |>
@@ -253,10 +253,10 @@ full_dataset <- full_dataset |>
 colnames(full_dataset)
 
 full_dataset_for_csv <- full_dataset |> 
-  select(participant_id, village, gender, age, cgsol, hsol, market_food_index,
-         glucose, total_cholesterol, hdl_cholesterol, ldl_cholesterol, triglycerides,
+  select(participant_id, village, gender, age, cgsol, hsol, market_food_index,food_insecurity,
+         glucose, total_cholesterol, hdl_cholesterol, ldl_cholesterol, triglycerides,average_systolic, average_diastolic,
          MAP, BMI, body_fat, waist_circumference, crp, n_valid_days, mean_inactive_min,
          mean_light_min, mean_moderate_min, mean_vigorous_min, mean_ENMO, mean_IG)
-
-write.csv(full_dataset_for_csv, row.names = FALSE,
-          file = "/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/cardio_food_sec_dataset.csv")
+# 
+# write.csv(full_dataset_for_csv, row.names = FALSE,
+#           file = "/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/cardio_food_sec_dataset.csv")

@@ -24,300 +24,38 @@ library(patchwork)
 library(gt)
 library(corrplot)
 
-
-# ── Model fit file path ───────────────────────────────────────────────────────
-
 fits_dir <- "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/"
 
-# ── Data loading ──────────────────────────────────────────────────────────────
-long_survey_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/long_survey.csv")
+full_dataset <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/cardio_food_sec_dataset.csv")
 
-short_survey_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/clean_data_tables/NSF Survey Data/short_survey.csv")
-
-cardiochek_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/Cardiochek/cardiochek_data.csv")
-colnames(cardiochek_data) <- tolower(colnames(cardiochek_data))
-
-ffq_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/ffq.csv")
-colnames(ffq_data) <- tolower(colnames(ffq_data))
-
-ax3_data_fp <- "/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/Axivity/GGIR Outputs/"
-
-actigraphy_data <- rbind(
-  read.csv(paste0(ax3_data_fp, "output_August 9-16/results/part5_daysummary_MM_L40M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "output_August 16-23/results/part5_daysummary_MM_L40M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "output_August 23-30/results/part5_daysummary_MM_L40M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "output_August 30 - September 6/results/part5_daysummary_MM_L40M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "output_Late Return/results/part5_daysummary_MM_L40M100V400_T5A5.csv"))
-)
-actigraphy_data$participant_id <- strtrim(actigraphy_data$ID, 4)
-
-crp_data <- readxl::read_excel("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/CRP ELISA RESULTS/CRP ELISA Results Master Sheet.xlsx",
-                               sheet = "Assay Results")
-```
-
-## 1.2 Data wrangling
-
-```{r wrangling_data, message=FALSE, warning=FALSE}
-## Food Data (n=424) ----
-food_data <- ffq_data |>
-  dplyr::select(contains(c("participant_id", "food_insecurity", "total"))) |>
-  dplyr::mutate(across(-c(participant_id, food_insecurity), as.numeric)) |> 
-  ## dropping partiicpants who weren't asked about food insecurity (preliminary FFQ)
-  filter(!is.na(food_insecurity)) |> 
-  mutate(participant_id = ifelse(participant_id == "NDF7038", "NSF7038", participant_id),
-         participant_id = ifelse(participant_id == "NSF705", "NSF7025", participant_id))
-
-
-## considering "study participants" as those who completed the FFQ w/ food insecurity question
-study_participant_ids<- food_data |> pull(participant_id)
-
-
-## Long Survey Health Data (n=273)----
-long_survey_health_data <- long_survey_data |>
-  filter(participant_id %in% study_participant_ids) |> 
-  dplyr::select(c(participant_id, gender, age, systolic_1, diastolic_1, systolic_2, diastolic_2,
-                  systolic_3, diastolic_3, height, weight, body_fat)) |>
-  mutate(across(contains("systolic"), as.numeric)) |>
-  mutate(across(contains("diastolic"), as.numeric)) |>
-  mutate(across(contains("height"), as.numeric)) |>
-  mutate(across(contains("weight"), as.numeric)) |>
-  mutate(age = as.numeric(age)) |>
-  mutate(body_fat = as.numeric(body_fat)) |> 
-  mutate(average_systolic  = (systolic_1 + systolic_2 + systolic_3) / 3) |>
-  mutate(average_diastolic = (diastolic_1 + diastolic_2 + diastolic_3) / 3) |>
-  mutate(MAP = average_diastolic + (average_systolic - average_diastolic) / 3) |>
-  mutate(BMI = weight / (height)^2) |> 
-  mutate(BMI = ifelse(BMI < 10|BMI > 60, NA, BMI))
-
-## Long Survey SOL Data (confirmed no NAs) (n = 273)----
-long_survey_sol_data <- long_survey_data |>
-  filter(participant_id %in% study_participant_ids) |> 
-  mutate(material_wall_index = 0) |>  # bamboo, rafia, travelers_palm default to 0
-  mutate(material_wall_index = if_else(material_wall == "wood",          1, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "burnt_brick",   2, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "metal_sheets",  3, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "cement",        4, material_wall_index)) %>%
-  mutate(material_roof_index = 0) %>%  # bamboo, thatch default to 0
-  mutate(material_roof_index = if_else(material_roof == "metal_sheets",  1, material_roof_index)) %>%
-  mutate(material_roof_index = if_else(material_roof == "cement",        2, material_roof_index)) %>%
-  mutate(material_floor_index = 0) %>%  # bamboo, dirt, travelers_palm default to 0
-  mutate(material_floor_index = if_else(material_floor == "wood",   1, material_floor_index)) %>%
-  mutate(material_floor_index = if_else(material_floor == "cement", 2, material_floor_index)) %>%
-  mutate(cgsol = rowSums(across(c(durable_goods_owned_mobile_phone,
-                                   durable_goods_owned_radio,
-                                   durable_goods_owned_television,
-                                   durable_goods_owned_computer,
-                                   durable_goods_owned_refrigerator,
-                                   durable_goods_owned_generator,
-                                   durable_goods_owned_bicycle,
-                                   durable_goods_owned_motorcycle,
-                                   durable_goods_owned_car_truck,
-                                   durable_goods_owned_boat),
-                                as.numeric),
-                         na.rm = TRUE)) |>
-  select(participant_id, cgsol, material_floor_index, material_wall_index,
-         material_roof_index, waist_circumference)
-
-## Short Survey Health Data (n = 151)----
-short_survey_health_data <- short_survey_data |>
-  filter(participant_id %in% study_participant_ids) |> 
-  select(c(participant_id, gender, age, systolic_1, diastolic_1, systolic_2, diastolic_2,
-           systolic_3, diastolic_3, height, weight)) |>
-  mutate(across(contains("systolic"), as.numeric)) |>
-  mutate(across(contains("diastolic"), as.numeric)) |>
-  mutate(across(contains("height"), as.numeric)) |>
-  mutate(across(contains("weight"), as.numeric)) |>
-  mutate(age = as.numeric(age)) |>
-  mutate(average_systolic  = (systolic_1 + systolic_2 + systolic_3) / 3) |>
-  mutate(average_diastolic = (diastolic_1 + diastolic_2 + diastolic_3) / 3) |>
-  mutate(MAP = average_diastolic + (average_systolic - average_diastolic) / 3) |>
-  mutate(BMI = weight / (height)^2) |> 
-  mutate(BMI = ifelse(BMI < 10|BMI > 60, NA, BMI)) |> 
-  mutate(waist_circumference = NA)
-
-## Short Survey SOL Data (n= 151)----
-### confirmed no NAs in house mats
-short_survey_sol_data <- short_survey_data |>
-    filter(participant_id %in% study_participant_ids) |> 
-  mutate(material_wall_index = 0) |>
-  mutate(material_wall_index = if_else(material_wall == "Wood – Bamboo",                  0, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Rafia",                          0, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Traveler's palm",                0, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Compacted earth",                0, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Mud",                            0, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Mud brick (unfired)",            0, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Wood – Planks",                 1, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Burnt brick",                      2, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(trimws(material_wall) == "Metal sheets (Iron, aluminum)", 3, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "Concrete/cement",                  4, material_wall_index)) %>%
-  mutate(material_roof_index = 0) %>%
-  mutate(material_roof_index = if_else(material_roof == "Thatch",                           0, material_roof_index)) %>%
-  mutate(material_roof_index = if_else(trimws(material_roof) == "Metal sheets (Iron, aluminum)", 1, material_roof_index)) %>%
-  mutate(material_roof_index = if_else(material_roof == "Concrete/Cement",                  2, material_roof_index)) %>%
-  mutate(material_floor_index = 0) %>%
-  mutate(material_floor_index = if_else(material_floor == "Sand/Dirt",          0, material_floor_index)) %>%
-  mutate(material_floor_index = if_else(material_floor == "Wood – Bamboo", 0, material_floor_index)) %>%
-  mutate(material_floor_index = if_else(material_floor == "Traveler's palm",    0, material_floor_index)) %>%
-  mutate(material_floor_index = if_else(material_floor == "Wood – Planks", 1, material_floor_index)) %>%
-  mutate(material_floor_index = if_else(material_floor == "Smooth cement",      2, material_floor_index)) %>%
-  mutate(cgsol = rowSums(across(c(durable_goods_owned_mobile_phone,
-                                   durable_goods_owned_radio,
-                                   durable_goods_owned_television,
-                                   durable_goods_owned_computer,
-                                   durable_goods_owned_refrigerator,
-                                   durable_goods_owned_generator,
-                                   durable_goods_owned_bicycle,
-                                   durable_goods_owned_motorcycle,
-                                   durable_goods_owned_car_truck,
-                                   durable_goods_owned_boat),
-                                as.numeric),
-                         na.rm = TRUE)) |>
-  select(participant_id, cgsol, material_floor_index, material_wall_index,
-         material_roof_index)
-
-## Cardiochek Data (n=393)----
-cardiochek_data <- cardiochek_data |>
-  ## dropping duplicate NSF7022 response....age doesn't match for R_mRIUzcXckCQEhdG
-  filter(responseid!="R_mRIUzcXckCQEhdG") |> 
-  filter(participant_id %in% study_participant_ids) |> 
-  select(-c(survey_date, responseid, age, gender, consent)) |>
-  select(-contains("category"))   |> 
-  ## removing non-fasting samples
-  filter(!grepl("eat", notes))
-
-## CRP Data (n = 133) -----
-crp_data <- crp_data |> 
-  mutate(cv = as.numeric(cv),
-         concentration_pg_ml_raw = as.numeric(concentration_pg_ml_raw),
-         additional_dilution_factor = as.numeric(dilution),
-         eluate_dilution = 167) |> 
-  filter(cv<12,concentration_pg_ml_raw > 18.75,concentration_pg_ml_raw < 1200) |> 
-  filter(!grepl("Control|Standard|Blank|Pool", sample_id),
-         !(grepl("saturated", notes)),
-         assay_number != 2) |> 
-  group_by(sample_id) %>%
-  slice_tail(n = 1) %>%
-  ungroup() |> 
-  rename(participant_id = sample_id) |> 
-  filter(participant_id%in%study_participant_ids) |> 
-  select(participant_id, additional_dilution_factor, concentration_pg_ml_raw) |> 
-  filter(!is.na(concentration_pg_ml_raw)) |> 
-  mutate(concentration_pg_ml_adjusted_for_dilutions = concentration_pg_ml_raw*additional_dilution_factor) |> 
-  mutate(serum_equivalent_mg_L = 1E-6*((355.67*concentration_pg_ml_adjusted_for_dilutions)-59884.10))
-
-## Actigraphy Summary (person-level) (n=103) ----
-actigraphy_summary <- actigraphy_data |>
-  filter(participant_id%in% study_participant_ids) |> 
-  mutate(
-    MVPA_min       = dur_day_total_MOD_min + dur_day_total_VIG_min,
-    inactivity_min = dur_day_total_IN_min
-  ) |>
-  group_by(participant_id) |>
-  summarise(
-    mean_MVPA_min     = mean(MVPA_min,       na.rm = TRUE),
-    mean_inactive_min = mean(inactivity_min, na.rm = TRUE),
-    n_valid_days      = n(),
-    .groups = "drop"
-  )
-
-## Merging ----
-### n = 267
-full_dataset_long_survey <- cardiochek_data |>
-  inner_join(food_data,               by = "participant_id") |>
-  inner_join(long_survey_health_data,  by = "participant_id") |>
-  inner_join(long_survey_sol_data,     by = "participant_id") |>
-  left_join(actigraphy_summary,        by = "participant_id") |> 
-  left_join(crp_data,        by = "participant_id")
-
-### n = 126
-full_dataset_short_survey <- cardiochek_data |>
-  inner_join(food_data,                by = "participant_id") |>
-  inner_join(short_survey_health_data, by = "participant_id") |>
-  inner_join(short_survey_sol_data,    by = "participant_id") |>
-  left_join(actigraphy_summary,        by = "participant_id") |>
-  left_join(crp_data,        by = "participant_id") |>
-  mutate("body_fat" = NA, .after = "BMI")
-
-### n = 393
-full_dataset <- rbind(full_dataset_long_survey, full_dataset_short_survey) |>
-  # hsol: sum raw ordinal scores across wall, roof, floor then scale once
-  mutate(hsol = material_wall_index + material_floor_index + material_roof_index) |>
-  mutate(
-    cgsol_z = as.numeric(scale(cgsol)),   # substantive MI predictor: consumer goods
-    hsol_z  = as.numeric(scale(hsol))     # control variable: housing quality
-    # MI composite dropped: cgsol_z and hsol_z modeled separately
-    # cgsol_z = active market participation (theoretically proximate mechanism)
-    # hsol_z  = durable wealth accumulation (control for background SES)
-  ) |>
-  rename(crp = serum_equivalent_mg_L)
-
-# ── Wrangling diagnostics ─────────────────────────────────────────────────────
-# Verify hsol raw score distribution and cgsol NA handling
-
-cat("hsol raw score distribution (should be 0–8 range):\n")
-print(summary(full_dataset$hsol))
-
-cat("\ncgsol distribution (should be 0–10, no NAs):\n")
-print(summary(full_dataset$cgsol))
-cat("N missing cgsol:", sum(is.na(full_dataset$cgsol)), "\n")
-
-cat("\nwall index levels:\n")
-print(table(full_dataset$material_wall_index, useNA = "always"))
-cat("\nroof index levels:\n")
-print(table(full_dataset$material_roof_index, useNA = "always"))
-cat("\nfloor index levels:\n")
-print(table(full_dataset$material_floor_index, useNA = "always"))
 
 
 
 #### counting # of participants with TANITA vs traditional scale
-n_tanita <- long_survey_data |> 
-  filter(participant_id %in% study_participant_ids) |> 
+n_tanita <- full_dataset |> 
   filter(!is.na(body_fat)) |> 
   nrow()
 
 print(paste0("n (tanita) = ", n_tanita))
 
-n_reg_scale_long <- long_survey_health_data |> 
-  filter(participant_id %in% study_participant_ids) |> 
-  filter(is.na(body_fat)&!is.na(weight)) |> 
+n_reg_scale <- full_dataset |> 
+  filter(is.na(body_fat)) |> 
   nrow()
 
-n_reg_scale_short <- short_survey_health_data |> 
-  filter(participant_id %in% study_participant_ids) |> 
-  nrow()
   
-print(paste0("n (regular scale) = ", n_reg_scale_long+ n_reg_scale_short))
+print(paste0("n (regular scale) = ", n_reg_scale))
 
 #### counting # of participants with CRP 
-n_crp <- crp_data |> 
-    filter(participant_id %in% study_participant_ids) |> 
+n_crp <- full_dataset |> 
   nrow()
 
 print(paste0("n (CRP) = ", n_crp))
 
 ### counting # of cardiochek participants
-n_cardiochek <- cardiochek_data |> 
-  filter(participant_id %in% study_participant_ids) |> 
+n_cardiochek <- full_dataset |> 
   nrow()
 
 print(paste0("n (cardiochek) = ", n_cardiochek))
-
-
-short_survey_health_data |> 
-     filter(participant_id%in% study_participant_ids) |> 
-     filter(is.na(age)) |> 
-     nrow()
-
-long_survey_health_data |> 
-     filter(participant_id%in% study_participant_ids) |> 
-     filter(is.na(gender)) |> 
-     nrow()
-
-long_survey_health_data |> 
-     filter(participant_id%in% study_participant_ids) |> 
-     filter(is.na(gender)) |> 
-     nrow()
 
 ```
 
@@ -422,39 +160,16 @@ full_dataset <- full_dataset |>
   
 ```
 
-## 1.3 Market food index
-
-```{r ffq_market_index}
-# ── Market food index ─────────────────────────────────────────────────────────
-# Market/processed items
-market_food_cols <- c(
-  "total_bread", "total_pasta", "total_chips", "total_cookies_sweets",
-  "total_soda", "total_beer", "total_butter_oil",
-  "total_dairy"
-)
-
-ffq_market <- ffq_data |>
-  mutate(across(all_of(market_food_cols), as.numeric)) |>
-  mutate(market_food_index = rowMeans(pick(all_of(market_food_cols)), na.rm = TRUE)) |>
-  select(participant_id, market_food_index)
-
-full_dataset <- full_dataset |>
-  left_join(ffq_market, by = "participant_id")
-```
-
-
 ## 1.5 Analytic dataset
 
 ```{r model_data}
 
 model_data <- full_dataset |>
-  filter(participant_id %in% study_participant_ids) |> 
   mutate(
     log_BMI           = log(BMI),
     log_body_fat      = log(body_fat),
     market_food_index_raw = market_food_index,
     market_food_index = log(market_food_index + 1),
-    log_mean_MVPA_min = log(mean_MVPA_min),
     log_MAP           = log(MAP),
     log_glucose       = log(glucose),
     log_hdl           = log(hdl_cholesterol),
@@ -479,10 +194,11 @@ model_data <- full_dataset |>
     log_tot_chol_ub = log(tot_chol_ub),
 
     log_hdl_lb = log(hdl_lb),
-    log_hdl_ub = log(hdl_ub)
+    log_hdl_ub = log(hdl_ub),
+    cgsol_z = scale(cgsol),
+    hsol_z = scale(hsol)
   ) |>
-  mutate(across(c(log_mean_MVPA_min,
-                  market_food_index,
+  mutate(across(c( market_food_index,
                   log_BMI,
                   log_body_fat,
                   log_MAP,
@@ -569,13 +285,6 @@ for (pair in exclusive_id_pairs) {
     cat("OK - exactly one present:", pair[which(in_data)], "\n")
   }
 }
-
-
-## will impute missing cardiochek biomarkers....dropping missing MAP, market food index, BMI
-model_data <- model_data |> 
-  filter(!is.na(log_MAP)) |> 
-  filter(!is.na(market_food_index)) |> 
-  filter(!is.na(BMI))
 
 print("FINAL ANALYTICAL SAMPLE SIZE:")
 nrow(model_data)
@@ -1058,31 +767,6 @@ ggsave("cardiochek_biomarkers.jpeg", path = "/Users/levkolinski/Library/CloudSto
 
 ```
 
-## 2.3 Activity Plots
-```{r activity_plots}
-activity_plot <- ggplot(data = actigraphy_summary, aes(x = mean_MVPA_min))+
-  geom_histogram(color = "white", fill = "#2c3e50", bins = 25)+
-  
-  # Titles and labels
-  labs(
-    title = NULL,
-    x = "Average minutes spent in MVPA (N = 103)",
-    y = NULL
-  ) +
-  # Clean and modern theme
-  theme_minimal(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold", hjust = 0.5),
-    axis.title = element_text(face = "bold")
-  )
-                          
-activity_plot
-
-mean(actigraphy_summary$mean_MVPA_min, na.rm =T)
-sd(actigraphy_summary$mean_MVPA_min, na.rm =T)
-
-```
-
 ## 2.4 Body fat Plot
 ```{r body_fat}
 body_fat_plot <- ggplot(data = full_dataset |> 
@@ -1230,51 +914,51 @@ priors_path <- c(
 
 set.seed(24)
 # # 
-fit_path <- brm(
-  formula =
-    # a-path: MI → diet mediator
-    bf(market_food_index ~ cgsol_z + hsol_z + age + gender + (1 | village)) +
-
-    # gaussian outcome equations: direct (c) + mediated (b) paths
-    bf(log_BMI ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village)) +
-
-    bf(log_MAP ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village)) +
-
-    bf(
-      log_tri_lb |
-        cens(tri_cens, y2 = log_tri_ub) ~
-        cgsol_z + hsol_z + market_food_index +
-        age + gender + (1 | village)
-    ) +
-
-    bf(log_glucose       ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village))+
-
-    bf(
-      log_ldl_lb |
-        cens(ldl_cens, y2 = log_ldl_ub) ~
-        cgsol_z + hsol_z + market_food_index +
-        age + gender + (1 | village)
-    ) +
-
-     bf(
-      log_hdl_lb |
-        cens(hdl_cens, y2 = log_hdl_ub) ~
-        cgsol_z + hsol_z + market_food_index +
-        age + gender + (1 | village)
-    ) +
-
-    # H1.2: food insecurity — bernoulli family
-    bf(food_insecurity ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village),
-       family = bernoulli(link = "logit")) +
-    set_rescor(FALSE),
-
-  data    = model_data,
-  family  = gaussian(),           # default family for all equations without explicit family
-  prior   = priors_path,
-  chains  = 4, iter = 4000, warmup = 1000, cores = 4, seed = 24,
-  control = list(adapt_delta = 0.9995, max_treedepth = 12)
-)
-
+# fit_path <- brm(
+#   formula =
+#     # a-path: MI → diet mediator
+#     bf(market_food_index ~ cgsol_z + hsol_z + age + gender + (1 | village)) +
+# 
+#     # gaussian outcome equations: direct (c) + mediated (b) paths
+#     bf(log_BMI ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village)) +
+# 
+#     bf(log_MAP ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village)) +
+# 
+#     bf(
+#       log_tri_lb |
+#         cens(tri_cens, y2 = log_tri_ub) ~
+#         cgsol_z + hsol_z + market_food_index +
+#         age + gender + (1 | village)
+#     ) +
+# 
+#     bf(log_glucose       ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village))+
+# 
+#     bf(
+#       log_ldl_lb |
+#         cens(ldl_cens, y2 = log_ldl_ub) ~
+#         cgsol_z + hsol_z + market_food_index +
+#         age + gender + (1 | village)
+#     ) +
+# 
+#      bf(
+#       log_hdl_lb |
+#         cens(hdl_cens, y2 = log_hdl_ub) ~
+#         cgsol_z + hsol_z + market_food_index +
+#         age + gender + (1 | village)
+#     ) +
+# 
+#     # H1.2: food insecurity — bernoulli family
+#     bf(food_insecurity ~ cgsol_z + hsol_z + market_food_index + age + gender + (1 | village),
+#        family = bernoulli(link = "logit")) +
+#     set_rescor(FALSE),
+# 
+#   data    = model_data,
+#   family  = gaussian(),           # default family for all equations without explicit family
+#   prior   = priors_path,
+#   chains  = 4, iter = 4000, warmup = 1000, cores = 4, seed = 24,
+#   control = list(adapt_delta = 0.9995, max_treedepth = 12)
+# )
+# 
 
 # saveRDS(fit_path, file = paste0(fits_dir, "fit_path_2026.08.11_cens.rds"))
 
@@ -1396,14 +1080,13 @@ total_draws <- tibble(
   pivot_longer(everything(), names_to = "outcome", values_to = "estimate") |>
   mutate(effect_type = "Total (Direct + Indirect)")
 
-all_effects <- bind_rows(direct_draws, indirect_draws, total_draws) |>
+all_effects <- bind_rows(direct_draws, indirect_draws) |>
   mutate(
     outcome     = factor(outcome, levels = names(outcome_labels), labels = outcome_labels),
     effect_type = factor(effect_type,
                          levels = c("Direct (Goods → Outcome)",
-                                    "Indirect (Goods → Diet → Outcome)",
-                                    "Total (Direct + Indirect)"))
-  )
+                                    "Indirect (Goods → Diet → Outcome)")
+  ))
 
 # ── Combined halfeye plot ──────────────────────────────────────────────────────
 p_main <- all_effects |>
@@ -1412,22 +1095,29 @@ p_main <- all_effects |>
   stat_halfeye(.width = 0.89, point_interval = median_qi,
                alpha = 0.75, normalize = "groups",
                position = position_dodge(width = 0.5), slab_linewidth = 0.3) +
-  scale_fill_manual(values  = c("Direct (Goods → Outcome)"          = col_direct,
-                                 "Indirect (Goods → Diet → Outcome)" = col_indirect,
-                                 "Total (Direct + Indirect)"           = col_total), name = NULL) +
-  scale_color_manual(values = c("Direct (Goods → Outcome)"          = col_direct,
-                                 "Indirect (Goods → Diet → Outcome)" = col_indirect,
-                                 "Total (Direct + Indirect)"           = col_total), name = NULL) +
+  scale_fill_manual(
+    values = c("Direct (Goods → Outcome)"          = col_direct,
+               "Indirect (Goods → Diet → Outcome)" = col_indirect),
+    name = NULL
+  ) +
+  scale_color_manual(
+    values = c("Direct (Goods → Outcome)"          = col_direct,
+               "Indirect (Goods → Diet → Outcome)" = col_indirect),
+    name = NULL
+  ) +
   scale_y_discrete(limits = rev) +
   labs(x = "Posterior estimate", y = NULL,
        title    = "Effects of market integration on cardiometabolic health and food insecurity",
        subtitle = "Indirect pathway through market food consumption | 89% credibility intervals") +
   theme_classic(base_size = 12) +
-  theme(legend.position = "top", legend.text = element_text(size = 11),
-        axis.text.y = element_text(size = 11), axis.text.x = element_text(size = 10),
-        plot.title = element_text(size = 13, face = "bold"),
-        plot.subtitle = element_text(size = 10, color = "grey40"),
+  theme(legend.position    = "top",
+        legend.text        = element_text(size = 11),
+        axis.text.y        = element_text(size = 11),
+        axis.text.x        = element_text(size = 10),
+        plot.title         = element_text(size = 13, face = "bold"),
+        plot.subtitle      = element_text(size = 10, color = "grey40"),
         panel.grid.major.x = element_line(color = "grey92", linewidth = 0.3))
+
 print(p_main)
 
 ggsave("main_path_model.jpeg", path = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
@@ -1469,7 +1159,7 @@ print(p_indirect_main)
 print(p_total_main)
 
 # ── Three-panel split ──────────────────────────────────────────────────────────
-print(p_direct_main + p_indirect_main + p_total_main +
+print(p_direct_main + p_indirect_main +
   plot_annotation(title = "Market Integration Effects on Health Outcomes",
                   subtitle = "89% credible intervals | log-transformed outcomes",
                   theme = theme(plot.title = element_text(face = "bold", size = 13),
@@ -1511,7 +1201,6 @@ log_trig_sd <- model_data |>
   log() |>
   sd(na.rm = TRUE)
 observed_median_trig <- full_dataset |>
-  filter(participant_id %in% study_participant_ids) |> 
   pull(triglycerides) |> 
   median(triglycerides, na.rm = T)
 
@@ -1528,7 +1217,6 @@ log_ldl_sd <- model_data |>
   sd(na.rm = TRUE)
 
 observed_median_ldl <- full_dataset |>
-  filter(participant_id %in% study_participant_ids) |> 
   pull(ldl_cholesterol) |> 
   median(ldl_cholesterol, na.rm = T)
 

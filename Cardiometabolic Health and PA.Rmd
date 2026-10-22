@@ -19,177 +19,9 @@ library(patchwork)
 library(gt)
 library(corrplot)
 
+fits_dir <- "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/"
 
-# ── Model fit file path ───────────────────────────────────────────────────────
-
-fits_dir <- "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits"
-
-# ── Data loading ──────────────────────────────────────────────────────────────
-long_survey_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/long_survey.csv")
-
-cardiochek_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/Cardiochek/cardiochek_data.csv")
-colnames(cardiochek_data) <- tolower(colnames(cardiochek_data))
-
-ffq_data <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/ffq.csv")
-colnames(ffq_data) <- tolower(colnames(ffq_data))
-
-ax3_data_fp <- "/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/Axivity/GGIR Outputs/"
-
-actigraphy_data <- rbind(
-  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 9-16/results/part5_daysummary_MM_L30M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 16-23/results/part5_daysummary_MM_L30M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 23-30/results/part5_daysummary_MM_L30M100V400_T5A5.csv")),
-  read.csv(paste0(ax3_data_fp, "GGIR Outputs Aug 2026/output_August 30 - September 6/results/part5_daysummary_MM_L30M100V400_T5A5.csv")))
-
-actigraphy_data$participant_id <- strtrim(actigraphy_data$ID, 4)
-
-crp_data <- readxl::read_excel("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/CRP ELISA RESULTS/CRP ELISA Results Master Sheet.xlsx",
-                               sheet = "Assay Results")
-```
-
-## 1.2 Data wrangling
-
-```{r wrangling_data, message=FALSE, warning=FALSE}
-## Food Data (n=424) ----
-food_data <- ffq_data |>
-  dplyr::select(contains(c("participant_id", "food_insecurity", "total"))) |>
-  dplyr::mutate(across(-c(participant_id, food_insecurity), as.numeric)) |> 
-  ## dropping partiicpants who weren't asked about food insecurity (preliminary FFQ)
-  filter(!is.na(food_insecurity)) |> 
-  mutate(participant_id = ifelse(participant_id == "NDF7038", "NSF7038", participant_id),
-         participant_id = ifelse(participant_id == "NSF705", "NSF7025", participant_id))
-
-
-
-## Long Survey Health Data (n=273)----
-long_survey_health_data <- long_survey_data |>
-  dplyr::select(c(participant_id, gender, age, systolic_1, diastolic_1, systolic_2, diastolic_2,
-                  systolic_3, diastolic_3, height, weight, body_fat)) |>
-  mutate(across(contains("systolic"), as.numeric)) |>
-  mutate(across(contains("diastolic"), as.numeric)) |>
-  mutate(across(contains("height"), as.numeric)) |>
-  mutate(across(contains("weight"), as.numeric)) |>
-  mutate(age = as.numeric(age)) |>
-  mutate(body_fat = as.numeric(body_fat)) |> 
-  mutate(average_systolic  = (systolic_1 + systolic_2 + systolic_3) / 3) |>
-  mutate(average_diastolic = (diastolic_1 + diastolic_2 + diastolic_3) / 3) |>
-  mutate(MAP = average_diastolic + (average_systolic - average_diastolic) / 3) |>
-  mutate(BMI = weight / (height)^2) |> 
-  mutate(BMI = ifelse(BMI < 10|BMI > 60, NA, BMI))
-
-## Long Survey SOL Data (confirmed no NAs) (n = 273)----
-long_survey_sol_data <- long_survey_data |>
-  mutate(material_wall_index = 0) |>  # bamboo, rafia, travelers_palm default to 0
-  mutate(material_wall_index = if_else(material_wall == "wood",          1, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "burnt_brick",   2, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "metal_sheets",  3, material_wall_index)) %>%
-  mutate(material_wall_index = if_else(material_wall == "cement",        4, material_wall_index)) %>%
-  mutate(material_roof_index = 0) %>%  # bamboo, thatch default to 0
-  mutate(material_roof_index = if_else(material_roof == "metal_sheets",  1, material_roof_index)) %>%
-  mutate(material_roof_index = if_else(material_roof == "cement",        2, material_roof_index)) %>%
-  mutate(material_floor_index = 0) %>%  # bamboo, dirt, travelers_palm default to 0
-  mutate(material_floor_index = if_else(material_floor == "wood",   1, material_floor_index)) %>%
-  mutate(material_floor_index = if_else(material_floor == "cement", 2, material_floor_index)) %>%
-  mutate(cgsol = rowSums(across(c(durable_goods_owned_mobile_phone,
-                                   durable_goods_owned_radio,
-                                   durable_goods_owned_television,
-                                   durable_goods_owned_computer,
-                                   durable_goods_owned_refrigerator,
-                                   durable_goods_owned_generator,
-                                   durable_goods_owned_bicycle,
-                                   durable_goods_owned_motorcycle,
-                                   durable_goods_owned_car_truck,
-                                   durable_goods_owned_boat),
-                                as.numeric),
-                         na.rm = TRUE)) |>
-  select(participant_id, cgsol, material_floor_index, material_wall_index,
-         material_roof_index, waist_circumference)
-
-## Cardiochek Data (n=393)----
-cardiochek_data <- cardiochek_data |>
-  ## dropping duplicate NSF7022 response....age doesn't match for R_mRIUzcXckCQEhdG
-  filter(responseid!="R_mRIUzcXckCQEhdG") |> 
-  select(-c(survey_date, responseid, age, gender, consent)) |>
-  select(-contains("category"))   |> 
-  ## removing non-fasting samples
-  filter(!grepl("eat", notes))
-
-## CRP Data (n = 133) -----
-crp_data <- crp_data |> 
-  mutate(cv = as.numeric(cv),
-         concentration_pg_ml_raw = as.numeric(concentration_pg_ml_raw),
-         additional_dilution_factor = as.numeric(dilution),
-         eluate_dilution = 167) |> 
-  filter(cv<12,concentration_pg_ml_raw > 18.75,concentration_pg_ml_raw < 1200) |> 
-  filter(!grepl("Control|Standard|Blank|Pool", sample_id),
-         !(grepl("saturated", notes)),
-         assay_number != 2) |> 
-  group_by(sample_id) %>%
-  slice_tail(n = 1) %>%
-  ungroup() |> 
-  rename(participant_id = sample_id) |> 
-  select(participant_id, additional_dilution_factor, concentration_pg_ml_raw) |> 
-  filter(!is.na(concentration_pg_ml_raw)) |> 
-  mutate(concentration_pg_ml_adjusted_for_dilutions = concentration_pg_ml_raw*additional_dilution_factor) |> 
-  mutate(serum_equivalent_mg_L = 1E-6*((355.67*concentration_pg_ml_adjusted_for_dilutions)-59884.10))
-
-## Actigraphy Summary (person-level) (n=103) ----
-actigraphy_summary <- actigraphy_data |>
-  mutate(
-    light_min      = dur_day_total_LIG_min,
-    moderate_min   = dur_day_total_MOD_min,
-    vigorous_min   = dur_day_total_VIG_min,
-    inactivity_min = dur_day_total_IN_min,
-    ENMO           = ACC_day_mg,
-    intensity_gradient = ig_day_gradient
-  ) |>
-  group_by(participant_id) |>
-  summarise(
-    mean_light_min    = mean(light_min,      na.rm = TRUE),
-    mean_moderate_min = mean(moderate_min,   na.rm = TRUE),
-    mean_vigorous_min = mean(vigorous_min,   na.rm = TRUE),
-    mean_inactive_min = mean(inactivity_min, na.rm = TRUE),
-    mean_ENMO         = mean(ENMO,           na.rm = TRUE),
-    mean_IG           = mean(intensity_gradient, na.rm = TRUE),
-    n_valid_days      = n(),
-    .groups = "drop"
-  )
-
-## Merging ----
-### n = 273
-full_dataset_long_survey <- long_survey_health_data |>
-  inner_join(food_data,               by = "participant_id") |>
-  inner_join(long_survey_sol_data,     by = "participant_id") |>
-  left_join(actigraphy_summary,        by = "participant_id") |> 
-  left_join(crp_data,        by = "participant_id") |> 
-  left_join(cardiochek_data,  by = "participant_id") |> 
-  mutate(village = ifelse(participant_id == "A324", "Mandena", village))
-
-
-### n = 393
-full_dataset <- full_dataset_long_survey |>
-  # hsol: sum raw ordinal scores across wall, roof, floor then scale once
-  mutate(hsol = material_wall_index + material_floor_index + material_roof_index) |>
-  rename(crp = serum_equivalent_mg_L)
-
-# ── Wrangling diagnostics ─────────────────────────────────────────────────────
-# Verify hsol raw score distribution and cgsol NA handling
-
-cat("hsol raw score distribution (should be 0–8 range):\n")
-print(summary(full_dataset$hsol))
-
-cat("\ncgsol distribution (should be 0–10, no NAs):\n")
-print(summary(full_dataset$cgsol))
-cat("N missing cgsol:", sum(is.na(full_dataset$cgsol)), "\n")
-
-cat("\nwall index levels:\n")
-print(table(full_dataset$material_wall_index, useNA = "always"))
-cat("\nroof index levels:\n")
-print(table(full_dataset$material_roof_index, useNA = "always"))
-cat("\nfloor index levels:\n")
-print(table(full_dataset$material_floor_index, useNA = "always"))
-
-
+full_dataset <- read.csv("/Users/levkolinski/Library/CloudStorage/Box-Box/NSF Data/Survey Data/Lev Kolinski Data/cardio_food_sec_dataset.csv")
 ```
 
 
@@ -293,27 +125,6 @@ full_dataset <- full_dataset |>
   )
   
 ```
-
-## 1.3 Market food index
-
-```{r ffq_market_index}
-# ── Market food index ─────────────────────────────────────────────────────────
-# Market/processed items
-market_food_cols <- c(
-  "total_bread", "total_pasta", "total_chips", "total_cookies_sweets",
-  "total_soda", "total_beer", "total_butter_oil",
-  "total_dairy"
-)
-
-ffq_market <- ffq_data |>
-  mutate(across(all_of(market_food_cols), as.numeric)) |>
-  mutate(market_food_index = rowMeans(pick(all_of(market_food_cols)), na.rm = TRUE)) |>
-  select(participant_id, market_food_index)
-
-full_dataset <- full_dataset |>
-  left_join(ffq_market, by = "participant_id")
-```
-
 
 ## 1.5 Analytic dataset
 
@@ -614,7 +425,6 @@ model_data_acti |>
     n_triglycerides_missing = sum(is.na(triglycerides)),
     n_crp_missing = sum(is.na(log_crp)),
     n_ldl_missing           = sum(is.na(ldl_cholesterol)),
-    n_tested                = sum(!is.na(fasted)),
     # overlap: missing both total_chol and triglycerides
     n_both_chol_tri_missing          = sum(is.na(total_cholesterol) & is.na(triglycerides), na.rm = TRUE)
   )
@@ -641,8 +451,10 @@ testRes
 
 ## Actigraphy correlations
 ```{r}
-actigraphy_mat <- actigraphy_summary |> 
-  select(-participant_id, -n_valid_days) |> 
+actigraphy_mat <- full_dataset |> 
+  select(mean_light_min, mean_moderate_min, mean_vigorous_min, mean_inactive_min,
+         mean_ENMO, mean_IG) |> 
+  drop_na() |> 
   as.matrix()
 
 pa_var_labels_corrplot <- c(
@@ -676,18 +488,19 @@ corrplot(M,
          diag = FALSE)
 
 
-mean(actigraphy_summary$mean_vigorous_min)
-mean(actigraphy_summary$mean_moderate_min)
+mean(full_dataset$mean_vigorous_min, na.rm =T )
+mean(full_dataset$mean_moderate_min, na.rm =T)
 
-actigraphy_summary |> 
+full_dataset |> 
   mutate(mean_MVPA = mean_vigorous_min + mean_moderate_min) |> 
+  drop_na(mean_MVPA) |> 
   summarise(mean(mean_MVPA))
 
-actigraphy_summary |> 
+full_dataset |> 
   mutate(mean_MVPA = mean_vigorous_min + mean_moderate_min) |> 
+  drop_na(mean_MVPA) |> 
   summarise(sd(mean_MVPA))
 
-sd(actigraphy_summary$mean_vigorous_min)
 ```
 
 ## 4.2 Predictors of PA
@@ -722,7 +535,7 @@ pa_outcomes <- c(
 #   purrr::set_names(pa_outcomes)
 # saveRDS(fits_pa_outcomes, file = paste0(fits_dir, "predictors_PA_2026.08.17.rds"))
 
-fits_pa_outcomes<- readRDS(paste0(fits_dir, "/predictors_PA_2026.08.17.rds"))
+fits_pa_outcomes<- readRDS(paste0(fits_dir, "predictors_PA_2026.08.17.rds"))
 
 extract_predictor_effects <- function(fits, predictors = c("gender", "age", "cgsol_z", "hsol_z", "villageMandena")) {
   purrr::imap_dfr(fits, function(fit, outcome_key) {
@@ -742,6 +555,7 @@ extract_predictor_effects <- function(fits, predictors = c("gender", "age", "cgs
 
 
 fits_pa_outcomes<-fits_pa_outcomes[c("mean_inactive_min_z", "mean_ENMO_z", "mean_IG_z")]
+
 
 predictor_effects <- extract_predictor_effects(fits_pa_outcomes)
 
@@ -798,7 +612,7 @@ ggsave("predictors_of_pa.png", path = "/Users/levkolinski/Library/CloudStorage/B
 ## Predictors of all 6 PA outcomes (for supplementary)
 ```{r}
 
-fits_pa_outcomes<- readRDS(paste0(fits_dir, "/predictors_PA_2026.08.17.rds"))
+fits_pa_outcomes<- readRDS(paste0(fits_dir, "predictors_PA_2026.08.17.rds"))
 
 predictor_effects <- extract_predictor_effects(fits_pa_outcomes)
 
@@ -923,7 +737,16 @@ fit_health_outcome_models <- function(exposure, specs = outcome_specs, seed = 24
 
 # saveRDS(fits_pa_health, file = paste0(fits_dir, "/fits_PA_healthoutcomes_2026.08.17.rds"))
 
-fits_pa_health<- readRDS(paste0("/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/fits_PA_healthoutcomes_2026.08.17.rds"))
+fits_pa_health<- readRDS(paste0(fits_dir, "fits_PA_healthoutcomes_2026.08.17.rds"))
+
+# Ran once, then commented out
+pa_health_fixefs <- purrr::imap(fits_pa_health, function(fit_list, exposure) {
+  purrr::imap(fit_list, function(fit, outcome) {
+    fixef(fit, probs = c(0.055, 0.945))
+  })
+})
+saveRDS(pa_health_fixefs, paste0(fits_dir, "pa_health_fixefs_summary.rds"))
+
 
 fits_pa_health <- fits_pa_health[c("mean_IG_z", "mean_ENMO_z", "mean_inactive_min_z")]
 
@@ -950,52 +773,49 @@ outcome_labels <- c(
   met_s         = "Metabolic syndrome (logit)"
 )
 
-extract_pa_effect <- function(fits, exposure_var, exposure_label) {
+extract_pa_effect_draws <- function(fits, exposure_var, exposure_label) {
   purrr::imap_dfr(fits, function(fit, outcome_key) {
-    fe  <- fixef(fit, probs = c(0.055, 0.945))
-    row <- fe[exposure_var, ]
+    draws <- as_draws_df(fit)
     tibble::tibble(
       outcome  = outcome_key,
       exposure = exposure_label,
-      estimate = row[["Estimate"]],
-      lower    = row[[3]],
-      upper    = row[[4]]
+      estimate = draws[[paste0("b_", exposure_var)]]
     )
   })
 }
 
 pa_effects <- dplyr::bind_rows(
-  extract_pa_effect(fits_pa_health$mean_inactive_min_z,      "mean_inactive_min_z",      "Inactivity"),
-   extract_pa_effect(fits_pa_health$mean_ENMO_z,              "mean_ENMO_z",              "ENMO"),
-  extract_pa_effect(fits_pa_health$mean_IG_z,                "mean_IG_z",                "Intensity Gradient")
+  extract_pa_effect_draws(fits_pa_health$mean_inactive_min_z, "mean_inactive_min_z", "Inactivity"),
+  extract_pa_effect_draws(fits_pa_health$mean_ENMO_z,         "mean_ENMO_z",         "ENMO"),
+  extract_pa_effect_draws(fits_pa_health$mean_IG_z,           "mean_IG_z",           "Intensity Gradient")
 ) |>
   dplyr::mutate(
-    outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels))
+    outcome_label = factor(outcome_labels[outcome], levels = (outcome_labels)),
+    exposure      = factor(exposure, levels = c("Inactivity", "ENMO", "Intensity Gradient"))
   )
 
-pa_exposure_labels <- c("Inactivity", "ENMO", "Intensity Gradient")
-
-pa_effects$exposure <- factor(pa_effects$exposure, levels = pa_exposure_labels)
-
 pa_colors <- c(
-  "Inactivity" = "#313695",
-  # "Light"      = "#74add1",
-  # "Moderate"   = "#fdae61",
-  # "Vigorous"   = "#d73027",
-  "Intensity Gradient"         = "#984ea3",
-  "ENMO"       = "#4d4d4d"
+  "Inactivity"         = "#313695",
+  "ENMO"               = "#4d4d4d",
+  "Intensity Gradient" = "#984ea3"
 )
 
-pa_health_plot <- ggplot(pa_effects, aes(y = outcome_label, x = estimate, color = exposure)) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
-                  position = position_dodge(width = 0.7)) +
-  geom_point(position = position_dodge(width = 0.7), size = 2.5) +
+pa_health_plot <- ggplot(pa_effects, aes(y = outcome_label, x = estimate, fill = exposure, color = exposure)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.4) +
+  stat_halfeye(.width = 0.89, point_interval = median_qi,
+               alpha = 0.75, normalize = "panels",
+               position = position_dodge(width = 0.5), slab_linewidth = 0.3) +
+  scale_fill_manual(values  = pa_colors) +
   scale_color_manual(values = pa_colors) +
-  labs(x = "Effect of PA", y = NULL, color = NULL) +
-  guides(color = guide_legend(reverse = TRUE)) +
-  theme_minimal(base_size = 12) +
-  theme(panel.grid.minor = element_blank())
+  scale_y_discrete(limits = rev) +
+  labs(x = "Effect of PA", y = NULL, fill = NULL, color = NULL) +
+  guides(fill = guide_legend(reverse = TRUE), color = guide_legend(reverse = TRUE)) +
+  theme_classic(base_size = 12) +
+  theme(legend.position    = "right",
+        legend.text        = element_text(size = 11),
+        axis.text.y        = element_text(size = 11),
+        axis.text.x        = element_text(size = 10),
+        panel.grid.major.x = element_line(color = "grey92", linewidth = 0.3))
 
 ```
 
@@ -1025,7 +845,7 @@ fit_path_models_no_pa <- function(specs = outcome_specs, seed = 24) {
     purrr::set_names(specs$model_name)
 }
 
-fits_cgsol_no_PA     <- fit_path_models_no_pa()
+# fits_cgsol_no_PA     <- fit_path_models_no_pa()
 
 # saveRDS(fits_cgsol_no_PA, file = paste0(fits_dir, "fits_cgsol_health_no_mvpa_2026.08.25.rds"))
 
@@ -1046,42 +866,43 @@ outcome_labels <- c(
   met_s         = "Metabolic syndrome (logit)"
 )
 
-extract_cgsol_effect <- function(fits) {
+extract_cgsol_effect_draws <- function(fits) {
   purrr::imap_dfr(fits, function(fit, outcome_key) {
-    fe  <- fixef(fit, probs = c(0.055, 0.945))
-    row <- fe["cgsol_z", ]
+    draws <- as_draws_df(fit)
     tibble::tibble(
       outcome  = outcome_key,
       exposure = "Commercial Goods",
-      estimate = row[["Estimate"]],
-      lower    = row[[3]],
-      upper    = row[[4]]
+      estimate = draws[["b_cgsol_z"]]
     )
   })
 }
-cgsol_effects <- extract_cgsol_effect(fits_cgsol_no_PA) |>
-  dplyr::mutate(outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)))
 
+cgsol_effects <- extract_cgsol_effect_draws(fits_cgsol_no_PA) |>
+  dplyr::mutate(outcome_label = factor(outcome_labels[outcome], levels = (outcome_labels)))
 
 cgsol_health_plot <- ggplot(cgsol_effects, aes(y = outcome_label, x = estimate)) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0, color = "black") +
-  geom_point(size = 2.5, color = "black") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.4) +
+  stat_halfeye(.width = 0.89, point_interval = median_qi,
+               alpha = 0.75, normalize = "panels",
+               slab_linewidth = 0.3, fill = "grey20", color = "black") +
+  scale_y_discrete(limits = rev) +
   labs(x = "Effect of commercial goods", y = NULL) +
-  theme_minimal(base_size = 12) +
-  theme(panel.grid.minor = element_blank())
+  theme_classic(base_size = 12) +
+  theme(axis.text.y        = element_text(size = 11),
+        axis.text.x        = element_text(size = 10),
+        panel.grid.major.x = element_line(color = "grey92", linewidth = 0.3))
 
 cgsol_health_plot + pa_health_plot + plot_annotation(
   tag_levels = "A"
 )
 
 ggsave("pa_cgsol_health_coef_plots.jpeg", path = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
-       units="in", width=10, height=7, dpi=350, device = "jpeg", bg = "white")
+       units="in", width=11, height=7, dpi=350, device = "jpeg", bg = "white")
 
 
 ```
 
-## Modeling MI and PA together looking at health outcocomes
+## Modeling MI and PA together looking at health outcomes
 ```{r}
 fit_health_outcome_model_pa_cgsol <- function(lhs, exposure, family = gaussian(), data = model_data_acti, seed = 24) {
   form <- bf(as.formula(paste0(lhs, " ~ ", exposure, " + cgsol_z + hsol_z + age + gender + village")))
@@ -1102,42 +923,25 @@ fit_health_outcome_models_pa_cgsol <- function(exposure, specs = outcome_specs, 
     purrr::set_names(specs$model_name)
 }
 
-fits_pa_cgsol_health <- purrr::map(pa_exposures, fit_health_outcome_models_pa_cgsol) |>
-   purrr::set_names(pa_exposures)
+# fits_pa_cgsol_health <- purrr::map(pa_exposures, fit_health_outcome_models_pa_cgsol) |>
+#    purrr::set_names(pa_exposures)
 
 
-saveRDS(fits_pa_cgsol_health, file= "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/fits_cgsol_pa_health_2026.09.11.rds")
+# saveRDS(fits_pa_cgsol_health, file= "/Users/levkolinski/Desktop/LK_Cardiometabolic_Health/Analyses/cardio_food_sec/fits/fits_cgsol_pa_health_2026.09.11.rds")
 
-extract_joint_effects <- function(fits_list, exposure_var, exposure_label) {
+fits_pa_cgsol_health <- readRDS(paste0(fits_dir,"fits_cgsol_pa_health_2026.09.11.rds"))
+
+extract_joint_effects_draws <- function(fits_list, exposure_var, exposure_label) {
   purrr::imap_dfr(fits_list, function(fit, outcome_key) {
-    fe <- fixef(fit, probs = c(0.055, 0.945))
-    dplyr::bind_rows(
-      tibble::tibble(
-        outcome   = outcome_key,
-        predictor = "PA",
-        exposure  = exposure_label,
-        estimate  = fe[exposure_var, "Estimate"],
-        lower     = fe[exposure_var, 3],
-        upper     = fe[exposure_var, 4]
-      )
+    draws <- as_draws_df(fit)
+    tibble::tibble(
+      outcome   = outcome_key,
+      predictor = "PA",
+      exposure  = exposure_label,
+      estimate  = draws[[paste0("b_", exposure_var)]]
     )
   })
 }
-
-# Combine CGSOL and PA into one tidy frame with a shared color key
-joint_effects <- dplyr::bind_rows(
-  extract_joint_effects(fits_pa_cgsol_health$mean_light_min_z,        "mean_light_min_z",        "Light"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_moderate_min_z,     "mean_moderate_min_z",     "Moderate"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_vigorous_min_sqrt_z,"mean_vigorous_min_sqrt_z","Vigorous"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_inactive_min_z,     "mean_inactive_min_z",     "Inactivity"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_ENMO_z,             "mean_ENMO_z",             "ENMO"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_IG_z,               "mean_IG_z",               "Intensity Gradient")
-) |>
-  dplyr::mutate(
-    outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)),
-    exposure      = factor(exposure, levels = c("Light", "Moderate", "Vigorous",
-                                                "Inactivity", "ENMO", "Intensity Gradient"))
-  )
 
 series_colors <- c(
   "Light"              = "#74add1",
@@ -1148,95 +952,93 @@ series_colors <- c(
   "Intensity Gradient" = "#984ea3"
 )
 
-joint_effects_combined <- dplyr::bind_rows(
-  # All 6 PA effects
-  joint_effects |>
-    dplyr::filter(predictor == "PA") |>
-    dplyr::mutate(series = as.character(exposure))
-) |>
-  dplyr::mutate(
-    series = factor(series, levels = names(series_colors))
-  )
-
-ggplot(joint_effects_combined,
-       aes(y = outcome_label, x = estimate, color = series)) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  # geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
-  #                position = position_dodge(width = 0.8)) +
-  geom_point(position = position_dodge(width = 0.8), size = 2.5) +
-  scale_color_manual(values = series_colors) +
-  labs(
-    x     = "Posterior estimate (89% CI)",
-    y     = NULL,
-    color = NULL,
-    title    = "Effects of physical activity, adjusted for commercial goods",
-    subtitle = "89% credibility intervals"
-  ) +
-  guides(color = guide_legend(reverse = TRUE)) +
-  theme_minimal(base_size = 12) +
-  theme(
-    panel.grid.minor = element_blank(),
-    legend.position  = "top",
-    plot.title       = element_text(face = "bold", size = 12),
-    plot.subtitle    = element_text(color = "grey40", size = 10)
-  )
-
-ggsave("pa_cgsol_joint_health_coef_plots_no_CI.jpeg",
-       path  = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
-       units = "in", width = 11, height = 7, dpi = 350, device = "jpeg", bg = "white")
-
-
-### RESTRICTED TO 3 MAIN PA VARIABLES
-joint_effects_restricted <- dplyr::bind_rows(
-  extract_joint_effects(fits_pa_cgsol_health$mean_inactive_min_z,     "mean_inactive_min_z",     "Inactivity"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_ENMO_z,             "mean_ENMO_z",             "ENMO"),
-  extract_joint_effects(fits_pa_cgsol_health$mean_IG_z,               "mean_IG_z",               "Intensity Gradient")
+# All 6 PA exposures
+joint_effects <- dplyr::bind_rows(
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_light_min_z,         "mean_light_min_z",         "Light"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_moderate_min_z,      "mean_moderate_min_z",      "Moderate"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_vigorous_min_sqrt_z, "mean_vigorous_min_sqrt_z", "Vigorous"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_inactive_min_z,      "mean_inactive_min_z",      "Inactivity"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_ENMO_z,              "mean_ENMO_z",              "ENMO"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_IG_z,                "mean_IG_z",                "Intensity Gradient")
 ) |>
   dplyr::mutate(
     outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)),
-    exposure      = factor(exposure, levels = c("Inactivity", "ENMO", "Intensity Gradient"))
+    series        = factor(exposure, levels = names(series_colors))
   )
 
+ggplot(joint_effects,
+       aes(y = outcome_label, x = estimate, fill = series, color = series)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.4) +
+  stat_halfeye(.width = 0.89, point_interval = median_qi,
+               alpha = 0.75, normalize = "groups",
+               position = position_dodge(width = 0.5), slab_linewidth = 0.3) +
+  scale_fill_manual(values  = series_colors, name = NULL) +
+  scale_color_manual(values = series_colors, name = NULL) +
+  scale_y_discrete(limits = rev) +
+  labs(
+    x        = "Posterior estimate",
+    y        = NULL,
+    title    = "Effects of physical activity, adjusted for commercial goods",
+    subtitle = "89% credibility intervals"
+  ) +
+  guides(fill = guide_legend(reverse = TRUE), color = guide_legend(reverse = TRUE)) +
+  theme_classic(base_size = 12) +
+  theme(legend.position    = "top",
+        legend.text        = element_text(size = 11),
+        axis.text.y        = element_text(size = 11),
+        axis.text.x        = element_text(size = 10),
+        plot.title         = element_text(size = 13, face = "bold"),
+        plot.subtitle      = element_text(size = 10, color = "grey40"),
+        panel.grid.major.x = element_line(color = "grey92", linewidth = 0.3))
+
+ggsave("pa_cgsol_joint_health_density_all.jpeg",
+       path  = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
+       units = "in", width = 12, height = 8, dpi = 350, device = "jpeg", bg = "white")
+
+
+### RESTRICTED TO 3 MAIN PA VARIABLES
 series_colors_restricted <- c(
   "Inactivity"         = "#313695",
   "ENMO"               = "#4d4d4d",
   "Intensity Gradient" = "#984ea3"
 )
 
-joint_effects_combined_restricted <- dplyr::bind_rows(
-  # All 6 PA effects
-  joint_effects_restricted |>
-    dplyr::filter(predictor == "PA") |>
-    dplyr::mutate(series = as.character(exposure))
+joint_effects_restricted <- dplyr::bind_rows(
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_inactive_min_z, "mean_inactive_min_z", "Inactivity"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_ENMO_z,         "mean_ENMO_z",         "ENMO"),
+  extract_joint_effects_draws(fits_pa_cgsol_health$mean_IG_z,           "mean_IG_z",           "Intensity Gradient")
 ) |>
   dplyr::mutate(
-    series = factor(series, levels = names(series_colors_restricted))
+    outcome_label = factor(outcome_labels[outcome], levels = rev(outcome_labels)),
+    series        = factor(exposure, levels = names(series_colors_restricted))
   )
 
-ggplot(joint_effects_combined_restricted,
-       aes(y = outcome_label, x = estimate, color = series)) +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
-  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0,
-                 position = position_dodge(width = 0.8)) +
-  geom_point(position = position_dodge(width = 0.8), size = 2.5) +
-  scale_color_manual(values = series_colors) +
+ggplot(joint_effects_restricted,
+       aes(y = outcome_label, x = estimate, fill = series, color = series)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50", linewidth = 0.4) +
+  stat_halfeye(.width = 0.89, point_interval = median_qi,
+               alpha = 0.75, normalize = "groups",
+               position = position_dodge(width = 0.5), slab_linewidth = 0.3) +
+  scale_fill_manual(values  = series_colors_restricted, name = NULL) +
+  scale_color_manual(values = series_colors_restricted, name = NULL) +
+  scale_y_discrete(limits = rev) +
   labs(
-    x     = "Posterior estimate (89% CI)",
-    y     = NULL,
-    color = NULL,
+    x        = "Posterior estimate",
+    y        = NULL,
     title    = "Effects of physical activity, adjusted for commercial goods",
     subtitle = "89% credibility intervals"
   ) +
-  guides(color = guide_legend(reverse = TRUE)) +
-  theme_minimal(base_size = 12) +
-  theme(
-    panel.grid.minor = element_blank(),
-    legend.position  = "top",
-    plot.title       = element_text(face = "bold", size = 12),
-    plot.subtitle    = element_text(color = "grey40", size = 10)
-  )
+  guides(fill = guide_legend(reverse = TRUE), color = guide_legend(reverse = TRUE)) +
+  theme_classic(base_size = 12) +
+  theme(legend.position    = "top",
+        legend.text        = element_text(size = 11),
+        axis.text.y        = element_text(size = 11),
+        axis.text.x        = element_text(size = 10),
+        plot.title         = element_text(size = 13, face = "bold"),
+        plot.subtitle      = element_text(size = 10, color = "grey40"),
+        panel.grid.major.x = element_line(color = "grey92", linewidth = 0.3))
 
-ggsave("pa_cgsol_joint_health_coef_plots_main.jpeg",
+ggsave("pa_cgsol_joint_health_density_main.jpeg",
        path  = "/Users/levkolinski/Library/CloudStorage/Box-Box/EEID_Data_public/manuscripts/cardiometabolic_health_food_security/Figures/",
        units = "in", width = 11, height = 7, dpi = 350, device = "jpeg", bg = "white")
 
