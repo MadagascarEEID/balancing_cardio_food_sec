@@ -1,6 +1,6 @@
 # Balancing Cardiometabolic Health and Food Security in the Context of Market Integration in Northeast Madagascar
 
-This repository contains analysis code for a study examining how market integration — measured by commercial goods ownership (CGSOL) and housing quality (HSOL) — relates to cardiometabolic health outcomes and food security in rural northeast Madagascar, with a secondary analysis of physical activity (PA) as a moderating factor.
+This repository contains analysis code for a study examining how market integration — measured by commercial goods ownership (CGSOL) and housing quality (HSOL) — relates to cardiometabolic health outcomes and food security in rural northeast Madagascar, with a secondary analysis of physical activity (PA).
 
 ## Study overview
 
